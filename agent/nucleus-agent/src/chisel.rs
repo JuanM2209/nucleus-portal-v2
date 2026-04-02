@@ -17,6 +17,8 @@ pub struct ChiselManager {
     server_url: String,
     auth: String,
     tx: mpsc::UnboundedSender<Message>,
+    /// Pending restart flag — batches rapid expose/unexpose calls into one restart
+    needs_restart: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -39,6 +41,7 @@ impl ChiselManager {
             server_url: server_url.to_string(),
             auth: auth.to_string(),
             tx,
+            needs_restart: false,
         }
     }
 
@@ -50,8 +53,9 @@ impl ChiselManager {
         }
     }
 
-    /// Add a port exposure and restart chisel with all active services.
-    pub async fn expose_port(&mut self, service_name: &str, local_addr: &str, remote_port: u16) {
+    /// Add a port exposure. Marks for restart but doesn't restart immediately.
+    /// Call `flush()` after processing all messages in the current batch.
+    pub fn expose_port(&mut self, service_name: &str, local_addr: &str, remote_port: u16) {
         info!(
             service = service_name,
             local = local_addr,
@@ -66,10 +70,8 @@ impl ChiselManager {
                 remote_port,
             },
         );
+        self.needs_restart = true;
 
-        self.restart_chisel().await;
-
-        // Send success response
         let msg = AgentToServer::PortExposed {
             service_name: service_name.to_string(),
             remote_port,
@@ -77,13 +79,27 @@ impl ChiselManager {
         self.send_msg(&msg);
     }
 
-    /// Remove a port exposure and restart chisel.
-    pub async fn unexpose_port(&mut self, service_name: &str) {
+    /// Remove a port exposure. Marks for restart.
+    pub fn unexpose_port(&mut self, service_name: &str) {
         info!(service = service_name, "Unexposing port via chisel");
         self.active_services.remove(service_name);
+        self.needs_restart = true;
+
+        let msg = AgentToServer::PortUnexposeConfirm {
+            service_name: service_name.to_string(),
+        };
+        self.send_msg(&msg);
+    }
+
+    /// Apply pending changes — restart chisel if any expose/unexpose happened.
+    /// Called once after processing all WebSocket messages in the batch.
+    pub async fn flush(&mut self) {
+        if !self.needs_restart {
+            return;
+        }
+        self.needs_restart = false;
 
         if self.active_services.is_empty() {
-            // No services left — kill chisel
             if let Some(mut child) = self.child.take() {
                 let _ = child.start_kill();
             }
@@ -91,11 +107,6 @@ impl ChiselManager {
         } else {
             self.restart_chisel().await;
         }
-
-        let msg = AgentToServer::PortUnexposeConfirm {
-            service_name: service_name.to_string(),
-        };
-        self.send_msg(&msg);
     }
 
     /// Build chisel CLI args: client --auth USER:PASS URL R:PORT:ADDR ...

@@ -289,10 +289,12 @@ async fn handle_text_message(
         }
         // Chisel V2 transport
         Ok(ServerToAgent::PortExpose { service_name, local_addr, remote_port }) => {
-            chisel_mgr.expose_port(&service_name, &local_addr, remote_port).await;
+            chisel_mgr.expose_port(&service_name, &local_addr, remote_port);
+            chisel_mgr.flush().await;
         }
         Ok(ServerToAgent::PortUnexpose { service_name }) => {
-            chisel_mgr.unexpose_port(&service_name).await;
+            chisel_mgr.unexpose_port(&service_name);
+            chisel_mgr.flush().await;
         }
         Err(e) => {
             warn!("Failed to parse control message: {} — raw: {}", e, text);
