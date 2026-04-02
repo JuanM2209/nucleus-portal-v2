@@ -8,13 +8,8 @@ use tracing::{info, error};
 
 /// Manages the chisel client process for TCP port forwarding.
 ///
-/// Chisel uses reverse mode: the client tells the server which ports to expose.
-/// Unlike rathole, chisel has no config file — ports are specified as CLI args.
-/// Adding/removing ports requires restarting the chisel process (<1s).
-///
-/// Flow:
-///   portal sends port_expose → agent adds to active_services → restart_chisel()
-///   portal sends port_unexpose → agent removes from active_services → restart_chisel()
+/// Chisel reverse mode: client tells the server which ports to expose.
+/// Ports are specified as CLI args — adding/removing requires process restart.
 pub struct ChiselManager {
     binary_path: String,
     child: Option<Child>,
@@ -26,7 +21,6 @@ pub struct ChiselManager {
 
 #[derive(Debug, Clone)]
 struct ServiceConfig {
-    service_name: String,
     local_addr: String,
     remote_port: u16,
 }
@@ -48,7 +42,6 @@ impl ChiselManager {
         }
     }
 
-    /// Start chisel client (only if there are active services).
     pub async fn start(&mut self) {
         if !self.active_services.is_empty() {
             self.restart_chisel().await;
@@ -57,8 +50,8 @@ impl ChiselManager {
         }
     }
 
-    /// Add a port exposure and restart chisel.
-    pub fn expose_port(&mut self, service_name: &str, local_addr: &str, remote_port: u16) {
+    /// Add a port exposure and restart chisel with all active services.
+    pub async fn expose_port(&mut self, service_name: &str, local_addr: &str, remote_port: u16) {
         info!(
             service = service_name,
             local = local_addr,
@@ -69,112 +62,43 @@ impl ChiselManager {
         self.active_services.insert(
             service_name.to_string(),
             ServiceConfig {
-                service_name: service_name.to_string(),
                 local_addr: local_addr.to_string(),
                 remote_port,
             },
         );
 
-        // Spawn restart in background to avoid blocking the message handler
-        let mgr_info = self.build_chisel_args();
-        let binary = self.binary_path.clone();
-        let svc_name = service_name.to_string();
-        let tx = self.tx.clone();
-        let rport = remote_port;
+        self.restart_chisel().await;
 
-        // Kill existing child synchronously
-        if let Some(mut child) = self.child.take() {
-            let _ = child.start_kill();
-        }
-
-        tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            match Command::new(&binary)
-                .args(&mgr_info)
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .kill_on_drop(true)
-                .spawn()
-            {
-                Ok(_child) => {
-                    info!("Chisel restarted with {} services", mgr_info.len() - 3); // subtract: client, --auth, URL
-                    let msg = AgentToServer::PortExposed {
-                        service_name: svc_name,
-                        remote_port: rport,
-                    };
-                    if let Ok(json) = serde_json::to_string(&msg) {
-                        let _ = tx.send(Message::Text(json));
-                    }
-                }
-                Err(e) => {
-                    error!("Failed to start chisel: {}", e);
-                    let msg = AgentToServer::PortError {
-                        service_name: svc_name,
-                        error: format!("Chisel start failed: {}", e),
-                    };
-                    if let Ok(json) = serde_json::to_string(&msg) {
-                        let _ = tx.send(Message::Text(json));
-                    }
-                }
-            }
-        });
+        // Send success response
+        let msg = AgentToServer::PortExposed {
+            service_name: service_name.to_string(),
+            remote_port,
+        };
+        self.send_msg(&msg);
     }
 
     /// Remove a port exposure and restart chisel.
-    pub fn unexpose_port(&mut self, service_name: &str) {
+    pub async fn unexpose_port(&mut self, service_name: &str) {
         info!(service = service_name, "Unexposing port via chisel");
         self.active_services.remove(service_name);
 
-        // Kill existing
-        if let Some(mut child) = self.child.take() {
-            let _ = child.start_kill();
-        }
-
-        let svc_name = service_name.to_string();
-        let tx = self.tx.clone();
-
         if self.active_services.is_empty() {
-            // No services left, don't restart chisel
-            info!("All services removed, chisel stopped");
-            let msg = AgentToServer::PortUnexposeConfirm {
-                service_name: svc_name,
-            };
-            if let Ok(json) = serde_json::to_string(&msg) {
-                let _ = tx.send(Message::Text(json));
+            // No services left — kill chisel
+            if let Some(mut child) = self.child.take() {
+                let _ = child.start_kill();
             }
-            return;
+            info!("All services removed, chisel stopped");
+        } else {
+            self.restart_chisel().await;
         }
 
-        // Restart with remaining services
-        let args = self.build_chisel_args();
-        let binary = self.binary_path.clone();
-
-        tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            match Command::new(&binary)
-                .args(&args)
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .kill_on_drop(true)
-                .spawn()
-            {
-                Ok(_) => {
-                    let msg = AgentToServer::PortUnexposeConfirm {
-                        service_name: svc_name,
-                    };
-                    if let Ok(json) = serde_json::to_string(&msg) {
-                        let _ = tx.send(Message::Text(json));
-                    }
-                }
-                Err(e) => {
-                    error!("Failed to restart chisel after unexpose: {}", e);
-                }
-            }
-        });
+        let msg = AgentToServer::PortUnexposeConfirm {
+            service_name: service_name.to_string(),
+        };
+        self.send_msg(&msg);
     }
 
-    /// Build chisel client command-line arguments.
-    /// Format: client --auth USER:PASS SERVER_URL R:REMOTE:LOCAL R:REMOTE:LOCAL ...
+    /// Build chisel CLI args: client --auth USER:PASS URL R:PORT:ADDR ...
     fn build_chisel_args(&self) -> Vec<String> {
         let mut args = vec![
             "client".to_string(),
@@ -184,28 +108,27 @@ impl ChiselManager {
         ];
 
         for svc in self.active_services.values() {
-            // R:REMOTE_PORT:LOCAL_ADDR (reverse mode)
             args.push(format!("R:{}:{}", svc.remote_port, svc.local_addr));
         }
 
         args
     }
 
-    /// Restart the chisel client process with current active services.
+    /// Kill existing chisel process and start a new one with all active services.
     async fn restart_chisel(&mut self) {
-        // Kill existing
+        // Kill existing process
         if let Some(mut child) = self.child.take() {
             let _ = child.start_kill();
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            // Brief wait for clean shutdown
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         }
 
         if self.active_services.is_empty() {
-            info!("No active services, chisel not started");
             return;
         }
 
         let args = self.build_chisel_args();
-        info!(args = ?args, "Starting chisel client");
+        info!(services = self.active_services.len(), "Starting chisel client");
 
         match Command::new(&self.binary_path)
             .args(&args)
@@ -219,17 +142,22 @@ impl ChiselManager {
                 self.child = Some(child);
             }
             Err(e) => {
-                error!("Failed to start chisel client: {}", e);
+                error!("Failed to start chisel: {}", e);
             }
         }
     }
 
-    /// Stop chisel and clear all services.
     pub fn stop(&mut self) {
         if let Some(mut child) = self.child.take() {
             let _ = child.start_kill();
             info!("Chisel client stopped");
         }
         self.active_services.clear();
+    }
+
+    fn send_msg(&self, msg: &AgentToServer) {
+        if let Ok(json) = serde_json::to_string(msg) {
+            let _ = self.tx.send(Message::Text(json));
+        }
     }
 }
