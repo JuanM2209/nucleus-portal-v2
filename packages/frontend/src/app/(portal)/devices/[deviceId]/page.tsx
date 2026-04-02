@@ -555,21 +555,19 @@ function WebPortRow({
   const handleOpen = useCallback(async () => {
     setLoading(true);
     try {
-      const ip = targetIp === 'localhost' ? '127.0.0.1' : targetIp;
-      const res = await api.post<{ success: boolean; data: any }>('/sessions', {
-        deviceId, targetIp: ip, targetPort: service.port, tunnelType: 'browser', durationMinutes: 60,
-      });
-      if (res.data?.proxyUrl) window.open(res.data.proxyUrl, '_blank');
-      // Update exposure state after session creation
-      if (res.data?.exposureId) {
-        setExposure(prev => ({
-          id: res.data.exposureId,
-          refCount: res.data.attachmentCount || (prev ? prev.refCount + 1 : 1),
-          status: 'active',
-        }));
+      // Expose port via chisel tunnel and open directly in browser
+      const body = targetIp !== '127.0.0.1' && targetIp !== 'localhost' ? { targetIp } : undefined;
+      const res = await api.post<{ success: boolean; data: any }>(
+        `/devices/${deviceId}/ports/${service.port}/expose`, body,
+      );
+      if (res.data?.remotePort) {
+        const rPort = res.data.remotePort;
+        const tlsPorts = [443, 8443, 9090, 9443];
+        const protocol = tlsPorts.includes(service.port) ? 'https' : 'http';
+        window.open(`${protocol}://localhost:${rPort}/`, '_blank');
       }
     } catch (err: any) {
-      alert(`Failed to open session: ${err.message}`);
+      alert(`Failed to expose port: ${err.message}`);
     } finally {
       setLoading(false);
     }
@@ -764,32 +762,9 @@ function ProgramPortRow({
   const [loading, setLoading] = useState(false);
 
   const [exportModal, setExportModal] = useState<{ isOpen: boolean; sessionToken: string; wsUrl: string; targetPort: number }>({ isOpen: false, sessionToken: '', wsUrl: '', targetPort: 0 });
-  const handleExport = useCallback(async () => {
-    setLoading(true);
-    try {
-      const ip = targetIp === 'localhost' ? '127.0.0.1' : targetIp;
-      const res = await api.post<{ success: boolean; data: any }>('/sessions', {
-        deviceId,
-        targetIp: ip,
-        targetPort: service.port,
-        tunnelType: 'local',
-        durationMinutes: 60,
-      });
-      if (res.data?.helperConfig) {
-        const config = res.data.helperConfig;
-        setExportModal({
-          isOpen: true,
-          sessionToken: config.sessionToken,
-          wsUrl: config.wsUrl || config.server || '',
-          targetPort: config.targetPort || service.port,
-        });
-      }
-    } catch (err: any) {
-      alert(`Failed to create session: ${err.message}`);
-    } finally {
-      setLoading(false);
-    }
-  }, [deviceId, targetIp, service.port]);
+  const handleExport = useCallback(() => {
+    setExportModal({ isOpen: true, targetPort: service.port });
+  }, [service.port]);
 
   // Latency sparkline data — deterministic based on port + latency (no random)
   const baseLatency = endpointActive ? (latency ?? 0) : 0;
@@ -966,8 +941,7 @@ function ProgramPortRow({
         onClose={() => setExportModal(prev => ({ ...prev, isOpen: false }))}
         port={exportModal.targetPort}
         serviceName={serviceLabel(service)}
-        sessionToken={exportModal.sessionToken}
-        wsUrl={exportModal.wsUrl}
+        deviceId={deviceId}
       />
     </div>
   );
@@ -1202,31 +1176,9 @@ function BridgeServiceRow({ tcpPort, serialPort, baudRate, config, deviceId }: {
   const [loading, setLoading] = useState(false);
   const [exportModal, setExportModal] = useState<{ isOpen: boolean; sessionToken: string; wsUrl: string; targetPort: number }>({ isOpen: false, sessionToken: '', wsUrl: '', targetPort: 0 });
 
-  const handleExport = useCallback(async () => {
-    setLoading(true);
-    try {
-      const res = await api.post<{ success: boolean; data: any }>('/sessions', {
-        deviceId,
-        targetIp: '127.0.0.1',
-        targetPort: tcpPort,
-        tunnelType: 'local',
-        durationMinutes: 60,
-      });
-      if (res.data?.helperConfig) {
-        const config = res.data.helperConfig;
-        setExportModal({
-          isOpen: true,
-          sessionToken: config.sessionToken,
-          wsUrl: config.wsUrl || config.server || '',
-          targetPort: config.targetPort || tcpPort,
-        });
-      }
-    } catch (err: any) {
-      alert(`Failed to create session: ${err.message}`);
-    } finally {
-      setLoading(false);
-    }
-  }, [deviceId, tcpPort]);
+  const handleExport = useCallback(() => {
+    setExportModal({ isOpen: true, sessionToken: '', wsUrl: '', targetPort: tcpPort });
+  }, [tcpPort]);
 
   /* ── Friendly serial name ── */
   const serialLabel = serialPort.replace('/dev/', '');
@@ -1284,8 +1236,7 @@ function BridgeServiceRow({ tcpPort, serialPort, baudRate, config, deviceId }: {
         onClose={() => setExportModal(prev => ({ ...prev, isOpen: false }))}
         port={exportModal.targetPort}
         serviceName={`Modbus Bridge (${serialPort})`}
-        sessionToken={exportModal.sessionToken}
-        wsUrl={exportModal.wsUrl}
+        deviceId={deviceId}
       />
     </div>
   );
