@@ -5,14 +5,14 @@ set -euo pipefail
 # Nucleus Portal V2 — Rathole Server Installer
 # Installs rathole server on Linux/macOS for production use
 #
-# Usage:
-#   curl -fsSL https://raw.githubusercontent.com/JuanM2209/nucleus-portal-v2/main/scripts/install-rathole-server.sh | bash
+# Usage (VPS/server):
+#   curl -fsSL https://raw.githubusercontent.com/JuanM2209/nucleus-portal-v2/master/scripts/install-rathole-server.sh | sudo bash
+#
+# Custom install directory (for read-only filesystems):
+#   curl -fsSL ... | sudo INSTALL_DIR=/home/admin/rathole bash
 # ─────────────────────────────────────────────────────────────
 
 RATHOLE_VERSION="0.5.0"
-INSTALL_DIR="/opt/nucleus-rathole"
-CONFIG_FILE="$INSTALL_DIR/server.toml"
-SERVICE_FILE="/etc/systemd/system/rathole-server.service"
 
 echo "╔════════════════════════════════════════════╗"
 echo "║  Nucleus Portal V2 — Rathole Server Setup  ║"
@@ -47,6 +47,33 @@ esac
 
 DOWNLOAD_URL="https://github.com/rapiz1/rathole/releases/download/v${RATHOLE_VERSION}/${BINARY}.zip"
 
+# ── Find a writable install directory ──
+# Priority: $INSTALL_DIR env > /opt/nucleus-rathole > /var/lib/nucleus-rathole > /root/nucleus-rathole > /home/admin/nucleus-rathole
+find_writable_dir() {
+  # If user specified INSTALL_DIR, use it
+  if [ -n "${INSTALL_DIR:-}" ]; then
+    echo "$INSTALL_DIR"
+    return
+  fi
+
+  # Try directories in order of preference
+  for candidate in /opt/nucleus-rathole /var/lib/nucleus-rathole /root/nucleus-rathole /home/admin/nucleus-rathole; do
+    parent=$(dirname "$candidate")
+    if [ -d "$parent" ] && touch "$parent/.rathole_write_test" 2>/dev/null; then
+      rm -f "$parent/.rathole_write_test"
+      echo "$candidate"
+      return
+    fi
+  done
+
+  # Last resort: /tmp (survives reboot on some systems)
+  echo "/tmp/nucleus-rathole"
+}
+
+INSTALL_DIR=$(find_writable_dir)
+CONFIG_FILE="$INSTALL_DIR/server.toml"
+SERVICE_FILE="/etc/systemd/system/rathole-server.service"
+
 echo "→ OS: $OS ($ARCH)"
 echo "→ Binary: $BINARY"
 echo "→ Install dir: $INSTALL_DIR"
@@ -62,9 +89,25 @@ fi
 # Install dependencies
 echo "[1/5] Installing dependencies..."
 if command -v apt-get &>/dev/null; then
-  apt-get update -qq && apt-get install -y -qq curl unzip >/dev/null
+  apt-get update -qq 2>/dev/null && apt-get install -y -qq curl unzip >/dev/null 2>&1 || true
 elif command -v yum &>/dev/null; then
-  yum install -y -q curl unzip >/dev/null
+  yum install -y -q curl unzip >/dev/null 2>&1 || true
+fi
+
+# Verify curl and unzip exist
+if ! command -v curl &>/dev/null; then
+  echo "ERROR: curl is required but not found"
+  exit 1
+fi
+if ! command -v unzip &>/dev/null; then
+  echo "ERROR: unzip is required but not found"
+  # Try to use busybox unzip or extract manually
+  if command -v busybox &>/dev/null; then
+    alias unzip='busybox unzip'
+    echo "  Using busybox unzip as fallback"
+  else
+    exit 1
+  fi
 fi
 
 # Download
@@ -75,11 +118,11 @@ unzip -o -q /tmp/rathole.zip -d "$INSTALL_DIR"
 chmod +x "$INSTALL_DIR/rathole"
 rm -f /tmp/rathole.zip
 
-"$INSTALL_DIR/rathole" --version 2>/dev/null || echo "  Binary installed"
+echo "  $("$INSTALL_DIR/rathole" --version 2>&1 | head -1 || echo 'Binary installed')"
 
 # Generate token
 echo "[3/5] Generating configuration..."
-TOKEN=$(openssl rand -hex 32 2>/dev/null || head -c 64 /dev/urandom | xxd -p | tr -d '\n' | head -c 64)
+TOKEN=$(openssl rand -hex 32 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null | tr -d '-' || date +%s%N | sha256sum | head -c 64)
 
 if [ ! -f "$CONFIG_FILE" ]; then
   cat > "$CONFIG_FILE" << TOML
@@ -105,12 +148,17 @@ TOML
   echo "  ⚠  SAVE THIS TOKEN — you need it for agent config"
 else
   echo "  Config exists, skipping (delete $CONFIG_FILE to regenerate)"
+  # Extract existing token for display
+  TOKEN=$(grep 'default_token' "$CONFIG_FILE" | head -1 | sed 's/.*= *"//;s/".*//' || echo "unknown")
 fi
 
-# Systemd service
+# Systemd service (only on systemd hosts — skip inside Docker containers)
 echo "[4/5] Creating systemd service..."
-if [ "$OS" = "linux" ] && command -v systemctl &>/dev/null; then
-  cat > "$SERVICE_FILE" << EOF
+if [ "$OS" = "linux" ] && command -v systemctl &>/dev/null && [ -d /run/systemd/system ]; then
+  # /run/systemd/system exists only when systemd is PID 1 (not in containers)
+  SERVICE_DIR=$(dirname "$SERVICE_FILE")
+  if [ -w "$SERVICE_DIR" ]; then
+    cat > "$SERVICE_FILE" << EOF
 [Unit]
 Description=Rathole Server (Nucleus Portal V2)
 After=network.target
@@ -128,13 +176,32 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
 
-  systemctl daemon-reload
-  systemctl enable rathole-server
-  systemctl start rathole-server
-  echo "  Service created and started"
+    systemctl daemon-reload
+    systemctl enable rathole-server
+    systemctl start rathole-server
+    echo "  Service created and started"
+  else
+    echo "  /etc/systemd is read-only — skipping service creation"
+    echo "  Start manually: $INSTALL_DIR/rathole --server $CONFIG_FILE &"
+  fi
 else
-  echo "  Skipping systemd (not available)"
-  echo "  Start manually: $INSTALL_DIR/rathole --server $CONFIG_FILE"
+  echo "  Systemd not available (container or minimal OS)"
+  echo "  Start manually: $INSTALL_DIR/rathole --server $CONFIG_FILE &"
+
+  # Auto-start in background if not already running
+  if ! pgrep -f "rathole.*server" >/dev/null 2>&1; then
+    echo "  Starting rathole server in background..."
+    nohup "$INSTALL_DIR/rathole" --server "$CONFIG_FILE" > "$INSTALL_DIR/rathole.log" 2>&1 &
+    RATHOLE_PID=$!
+    sleep 1
+    if kill -0 "$RATHOLE_PID" 2>/dev/null; then
+      echo "  Running (PID: $RATHOLE_PID)"
+    else
+      echo "  WARNING: Process exited — check $INSTALL_DIR/rathole.log"
+    fi
+  else
+    echo "  Already running"
+  fi
 fi
 
 # Firewall
@@ -148,19 +215,30 @@ elif command -v firewall-cmd &>/dev/null; then
   firewall-cmd --permanent --add-port=10000-19999/tcp >/dev/null 2>&1 || true
   firewall-cmd --reload >/dev/null 2>&1 || true
   echo "  firewalld rules added"
+elif command -v iptables &>/dev/null; then
+  iptables -I INPUT -p tcp --dport 2333 -j ACCEPT 2>/dev/null || true
+  iptables -I INPUT -p tcp --dport 10000:19999 -j ACCEPT 2>/dev/null || true
+  echo "  iptables rules added"
 else
-  echo "  No firewall tool found — manually open ports 2333 and 10000-19999"
+  echo "  No firewall tool found — ports should be open by default"
 fi
 
 echo ""
 echo "════════════════════════════════════════════"
-echo "  Rathole server installed successfully!"
+echo "  Rathole server installed!"
 echo ""
+echo "  Binary:          $INSTALL_DIR/rathole"
+echo "  Config:          $CONFIG_FILE"
 echo "  Control channel: 0.0.0.0:2333"
 echo "  Dynamic ports:   10000-19999"
-echo "  Config:          $CONFIG_FILE"
 echo "  Token:           $TOKEN"
 echo ""
-echo "  Status:  systemctl status rathole-server"
-echo "  Logs:    journalctl -u rathole-server -f"
+if [ -d /run/systemd/system ] 2>/dev/null && [ -w /etc/systemd/system ]; then
+  echo "  Status:  systemctl status rathole-server"
+  echo "  Logs:    journalctl -u rathole-server -f"
+else
+  echo "  Logs:    tail -f $INSTALL_DIR/rathole.log"
+  echo "  Stop:    pkill -f 'rathole.*server'"
+  echo "  Start:   $INSTALL_DIR/rathole --server $CONFIG_FILE &"
+fi
 echo "════════════════════════════════════════════"
