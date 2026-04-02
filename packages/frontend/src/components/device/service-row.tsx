@@ -105,19 +105,20 @@ export function ServiceRow({
   const handleOpenBrowser = useCallback(async () => {
     setActionLoading(true);
     try {
-      const ip = targetIp === 'localhost' ? '127.0.0.1' : targetIp;
-      const res = await api.post<{ success: boolean; data: any }>('/sessions', {
-        deviceId,
-        targetIp: ip,
-        targetPort: service.port,
-        tunnelType: 'browser',
-        durationMinutes: 60,
-      });
-      if (res.data?.proxyUrl) {
-        window.open(res.data.proxyUrl, '_blank');
+      // Expose port via chisel tunnel and open directly
+      const res = await api.post<{ success: boolean; data: any }>(
+        `/devices/${deviceId}/ports/${service.port}/expose`,
+        targetIp !== '127.0.0.1' && targetIp !== 'localhost' ? { targetIp } : undefined,
+      );
+      if (res.data?.remotePort) {
+        const port = res.data.remotePort;
+        // Use HTTPS for known TLS ports, HTTP for everything else
+        const tlsPorts = [443, 8443, 9090, 9443];
+        const protocol = tlsPorts.includes(service.port) ? 'https' : 'http';
+        window.open(`${protocol}://localhost:${port}/`, '_blank');
       }
     } catch (err: any) {
-      alert(`Failed to open session: ${err.message}`);
+      alert(`Failed to expose port: ${err.message}`);
     } finally {
       setActionLoading(false);
     }
@@ -127,7 +128,7 @@ export function ServiceRow({
     setExportModalOpen(true);
   }, []);
 
-  const isBeta = service.port === 9090;
+  const isBeta = false; // Cockpit works natively via chisel TCP tunnel
 
   return (
     <div className="relative bg-surface-container-low rounded-xl p-4">
