@@ -1,7 +1,8 @@
-import { Injectable, Logger, ConflictException, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, ConflictException } from '@nestjs/common';
 import { Inject } from '@nestjs/common';
-import { eq, and, sql } from 'drizzle-orm';
-import { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { eq, and } from 'drizzle-orm';
+import { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
+import { DATABASE } from '../database/database.module';
 import { portAllocations, devices } from '../database/schema';
 
 /** Port range for dynamic rathole tunnels: 10001–19999 (port 10000 reserved for healthcheck) */
@@ -23,7 +24,7 @@ export class PortAllocationService {
   private readonly logger = new Logger(PortAllocationService.name);
 
   constructor(
-    @Inject('DATABASE') private readonly db: NodePgDatabase<any>,
+    @Inject(DATABASE) private readonly db: PostgresJsDatabase<any>,
   ) {}
 
   /**

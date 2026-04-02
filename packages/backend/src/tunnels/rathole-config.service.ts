@@ -18,7 +18,7 @@ export class RatholeConfigService {
 
   constructor() {
     this.configPath = process.env.RATHOLE_CONFIG_PATH
-      ?? path.resolve(process.cwd(), 'infra/rathole/server.toml');
+      ?? path.resolve(process.cwd(), '../../infra/rathole/server.toml');
     this.bindAddr = process.env.RATHOLE_BIND_ADDR ?? '0.0.0.0:2333';
     this.defaultToken = process.env.RATHOLE_TOKEN
       ?? 'cde41b29ecba087ace1af210a2cfa88a43d64be1dd64e482019b84fdb137d3a7';
@@ -78,7 +78,10 @@ bind_addr = "${this.bindAddr}"
 default_token = "${this.defaultToken}"
 
 [server.transport]
-type = "tcp"
+type = "websocket"
+
+[server.transport.websocket]
+tls = false
 
 `;
 
