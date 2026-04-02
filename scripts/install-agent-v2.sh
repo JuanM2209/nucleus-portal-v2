@@ -15,6 +15,7 @@ CONTAINER="remote-s"
 SERVER="${AGENT_SERVER_URL:-wss://api.datadesng.com/ws/agent}"
 DEVICE="${AGENT_TOKEN:-$(cat /data/nucleus/factory/nucleus_serial_number 2>/dev/null)}"
 RATHOLE_TK="${RATHOLE_TOKEN:-cde41b29ecba087ace1af210a2cfa88a43d64be1dd64e482019b84fdb137d3a7}"
+RATHOLE_ADDR="${RATHOLE_SERVER_ADDR:-75.109.165.86:2333}"
 
 echo ""
 echo "╔═══════════════════════════════════════╗"
@@ -51,6 +52,7 @@ docker run -d \
   -e AGENT_SERVER_URL="$SERVER" \
   -e AGENT_TOKEN="$DEVICE" \
   -e RATHOLE_TOKEN="$RATHOLE_TK" \
+  -e RATHOLE_SERVER_ADDR="$RATHOLE_ADDR" \
   "$IMAGE"
 
 echo ""

@@ -78,10 +78,7 @@ bind_addr = "${this.bindAddr}"
 default_token = "${this.defaultToken}"
 
 [server.transport]
-type = "websocket"
-
-[server.transport.websocket]
-tls = false
+type = "tcp"
 
 `;
 

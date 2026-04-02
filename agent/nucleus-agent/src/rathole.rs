@@ -145,11 +145,8 @@ impl RatholeManager {
         toml.push_str(&format!("remote_addr = \"{}\"\n", self.server_addr));
         toml.push_str(&format!("default_token = \"{}\"\n\n", self.token));
 
-        // Use WebSocket transport to traverse Cloudflare Tunnel
         toml.push_str("[client.transport]\n");
-        toml.push_str("type = \"websocket\"\n\n");
-        toml.push_str("[client.transport.websocket]\n");
-        toml.push_str("tls = true\n\n");
+        toml.push_str("type = \"tcp\"\n\n");
 
         for (name, svc) in &self.active_services {
             toml.push_str(&format!("[client.services.\"{}\"]\n", name));
