@@ -21,6 +21,14 @@ COPY agent/ agent/
 
 RUN cd agent && cargo build --release --target armv7-unknown-linux-musleabihf
 
+# ── Download rathole ARM binary ──
+FROM alpine:3.19 AS rathole-dl
+RUN apk add --no-cache curl unzip
+RUN curl -fsSL "https://github.com/rapiz1/rathole/releases/download/v0.5.0/rathole-arm-unknown-linux-musleabihf.zip" \
+      -o /tmp/rathole.zip && \
+    unzip /tmp/rathole.zip -d /tmp/rathole && \
+    chmod +x /tmp/rathole/rathole
+
 # ── Runtime stage: Debian slim for ARM (mbusd needs glibc) ──
 FROM arm32v7/debian:bookworm-slim
 
@@ -29,11 +37,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /build/agent/target/armv7-unknown-linux-musleabihf/release/nucleus-agent /usr/local/bin/nucleus-agent
+COPY --from=rathole-dl /tmp/rathole/rathole /usr/local/bin/rathole
 
 COPY agent/mbusd-arm /usr/local/bin/mbusd
 COPY agent/agent.example.toml /etc/nucleus/agent.toml
 
-RUN chmod +x /usr/local/bin/nucleus-agent /usr/local/bin/mbusd
+RUN chmod +x /usr/local/bin/nucleus-agent /usr/local/bin/mbusd /usr/local/bin/rathole && \
+    mkdir -p /etc/nucleus/rathole
 
 ENTRYPOINT ["nucleus-agent"]
 CMD ["--config", "/etc/nucleus/agent.toml"]

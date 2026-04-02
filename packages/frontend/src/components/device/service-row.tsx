@@ -88,12 +88,7 @@ export function ServiceRow({
 }: ServiceRowProps) {
   const [copied, setCopied] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
-  const [exportModal, setExportModal] = useState<{
-    isOpen: boolean;
-    sessionToken: string;
-    wsUrl: string;
-    targetPort: number;
-  }>({ isOpen: false, sessionToken: '', wsUrl: '', targetPort: 0 });
+  const [exportModalOpen, setExportModalOpen] = useState(false);
 
   const localhostEndpoint = `localhost:${service.port}`;
   const remoteEndpoint = `${targetIp}:${service.port}`;
@@ -128,32 +123,9 @@ export function ServiceRow({
     }
   }, [deviceId, targetIp, service.port]);
 
-  const handleExportLocal = useCallback(async () => {
-    setActionLoading(true);
-    try {
-      const ip = targetIp === 'localhost' ? '127.0.0.1' : targetIp;
-      const res = await api.post<{ success: boolean; data: any }>('/sessions', {
-        deviceId,
-        targetIp: ip,
-        targetPort: service.port,
-        tunnelType: 'local',
-        durationMinutes: 60,
-      });
-      const { sessionToken, wsUrl, targetPort } = res.data ?? {};
-      if (sessionToken) {
-        setExportModal({
-          isOpen: true,
-          sessionToken,
-          wsUrl: wsUrl ?? process.env.NEXT_PUBLIC_WS_URL ?? '',
-          targetPort: targetPort ?? service.port,
-        });
-      }
-    } catch (err: any) {
-      alert(`Failed to create session: ${err.message}`);
-    } finally {
-      setActionLoading(false);
-    }
-  }, [deviceId, targetIp, service.port]);
+  const handleExportLocal = useCallback(() => {
+    setExportModalOpen(true);
+  }, []);
 
   const isBeta = service.port === 9090;
 
@@ -280,12 +252,11 @@ export function ServiceRow({
       </div>
 
       <ExportModal
-        isOpen={exportModal.isOpen}
-        onClose={() => setExportModal((prev) => ({ ...prev, isOpen: false }))}
-        port={exportModal.targetPort}
+        isOpen={exportModalOpen}
+        onClose={() => setExportModalOpen(false)}
+        port={service.port}
         serviceName={service.serviceName}
-        sessionToken={exportModal.sessionToken}
-        wsUrl={exportModal.wsUrl}
+        deviceId={deviceId}
       />
     </div>
   );

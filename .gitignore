@@ -1,0 +1,45 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build outputs
+.next/
+dist/
+build/
+target/
+*.exe
+
+# Environment files
+.env
+.env.local
+.env.*.local
+packages/backend/.env
+packages/frontend/.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Turbo
+.turbo/
+
+# Rust
+agent/target/
+agent/nucleus-agent/target/
+agent/nucleus-common/target/
+
+# Rathole binaries (downloaded at install time)
+infra/rathole/rathole.exe
+infra/rathole/rathole

@@ -14,3 +14,9 @@ port_scan_timeout_ms = 2000
 
 [tunnel]
 max_concurrent = 10
+
+[rathole]
+binary_path = "/usr/local/bin/rathole"
+config_path = "/etc/nucleus/rathole/client.toml"
+# server_addr = "api.datadesng.com:2333"  # auto-derived from [server].url if omitted
+# token = "..."  # uses [server].token if omitted

@@ -5,6 +5,8 @@ import { TunnelProxyService } from './tunnel-proxy.service';
 import { ExposureService } from './exposure.service';
 import { CommsRelayService } from './comms-relay.service';
 import { SessionCleanupService } from './session-cleanup.service';
+import { PortAllocationService } from './port-allocation.service';
+import { RatholeConfigService } from './rathole-config.service';
 import { AgentGatewayModule } from '../agent-gateway/agent-gateway.module';
 import { AuditModule } from '../audit/audit.module';
 import { LogsModule } from '../logs/logs.module';
@@ -12,7 +14,14 @@ import { LogsModule } from '../logs/logs.module';
 @Module({
   imports: [AgentGatewayModule, AuditModule, LogsModule],
   controllers: [TunnelsController],
-  providers: [TunnelsService, TunnelProxyService, ExposureService, SessionCleanupService],
-  exports: [TunnelsService, TunnelProxyService, ExposureService],
+  providers: [
+    TunnelsService,
+    TunnelProxyService,
+    ExposureService,
+    SessionCleanupService,
+    PortAllocationService,
+    RatholeConfigService,
+  ],
+  exports: [TunnelsService, TunnelProxyService, ExposureService, PortAllocationService, RatholeConfigService],
 })
 export class TunnelsModule {}

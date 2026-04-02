@@ -1,0 +1,21 @@
+# Rathole Server Configuration — Nucleus Portal V2
+# Location: infra/rathole/server.toml
+# Docs: https://github.com/rapiz1/rathole
+#
+# The backend dynamically appends [server.services.*] sections
+# and rathole hot-reloads them automatically (no restart needed).
+
+[server]
+bind_addr = "0.0.0.0:2333"
+default_token = "cde41b29ecba087ace1af210a2cfa88a43d64be1dd64e482019b84fdb137d3a7"
+
+[server.transport]
+type = "tcp"
+
+# --- Dynamic services below (managed by backend) ---
+# Backend adds/removes [server.services.*] sections here.
+# Rathole hot-reloads on file change (no restart needed).
+
+# Placeholder service for initial startup (required by rathole)
+[server.services.healthcheck]
+bind_addr = "0.0.0.0:10000"

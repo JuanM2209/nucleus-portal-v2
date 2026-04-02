@@ -1,6 +1,8 @@
-import { Controller, Get, Post, Patch, Delete, Param, Body, Query, UseGuards, ParseUUIDPipe } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Param, Body, Query, UseGuards, ParseUUIDPipe, ParseIntPipe } from '@nestjs/common';
 import { DevicesService } from './devices.service';
 import { AgentRegistryService } from '../agent-gateway/agent-registry.service';
+import { PortAllocationService } from '../tunnels/port-allocation.service';
+import { RatholeConfigService } from '../tunnels/rathole-config.service';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { successResponse, paginatedResponse, errorResponse } from '../common/types/api-response';
@@ -24,6 +26,8 @@ export class DevicesController implements OnModuleDestroy {
   constructor(
     private readonly devicesService: DevicesService,
     private readonly agentRegistry: AgentRegistryService,
+    private readonly portAllocation: PortAllocationService,
+    private readonly ratholeConfig: RatholeConfigService,
   ) {
     this.bridgeEvents.setMaxListeners(50);
     // Listen for mbusd responses from AgentGateway via process events
@@ -252,6 +256,97 @@ export class DevicesController implements OnModuleDestroy {
       return errorResponse('Failed to send sync request');
     }
     return successResponse({ message: 'Sync requested' });
+  }
+
+  // ── Rathole Port Expose (V2 Transport) ──
+
+  @Post(':id/ports/:port/expose')
+  async exposePort(
+    @CurrentUser('tenantId') tenantId: string,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('port', ParseIntPipe) port: number,
+    @Body() body: { targetIp?: string },
+  ) {
+    const device = await this.devicesService.findById(tenantId, id);
+    if (!device) return errorResponse('Device not found');
+
+    const socket = this.agentRegistry.getSocket(id);
+    if (!socket || socket.readyState !== 1) {
+      return errorResponse('Agent is offline');
+    }
+
+    // Allocate remote port
+    const allocation = await this.portAllocation.allocatePort(id, port);
+
+    // Add to rathole server config (hot-reload)
+    this.ratholeConfig.addService(allocation.serviceName, allocation.remotePort);
+
+    // Send port_expose command to agent
+    const targetIp = body.targetIp || '127.0.0.1';
+    socket.send(JSON.stringify({
+      type: 'port_expose',
+      service_name: allocation.serviceName,
+      local_addr: `${targetIp}:${port}`,
+      remote_port: allocation.remotePort,
+    }));
+
+    const host = process.env.RATHOLE_PUBLIC_HOST ?? process.env.PORTAL_URL?.replace('https://', '').replace('http://', '') ?? 'api.datadesng.com';
+
+    this.logger.log(`Port exposed: device=${id} port=${port} → ${host}:${allocation.remotePort}`);
+    return successResponse({
+      serviceName: allocation.serviceName,
+      remotePort: allocation.remotePort,
+      host,
+      address: `${host}:${allocation.remotePort}`,
+    });
+  }
+
+  @Delete(':id/ports/:port/expose')
+  async unexposePort(
+    @CurrentUser('tenantId') tenantId: string,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('port', ParseIntPipe) port: number,
+  ) {
+    const device = await this.devicesService.findById(tenantId, id);
+    if (!device) return errorResponse('Device not found');
+
+    const released = await this.portAllocation.releasePort(id, port);
+    if (!released) return errorResponse('No active allocation for this port');
+
+    // Remove from rathole server config
+    this.ratholeConfig.removeService(released.serviceName);
+
+    // Send unexpose command to agent
+    const socket = this.agentRegistry.getSocket(id);
+    if (socket?.readyState === 1) {
+      socket.send(JSON.stringify({
+        type: 'port_unexpose',
+        service_name: released.serviceName,
+      }));
+    }
+
+    this.logger.log(`Port unexposed: device=${id} port=${port}`);
+    return successResponse({ message: 'Port unexposed' });
+  }
+
+  @Get(':id/ports')
+  async listExposedPorts(
+    @CurrentUser('tenantId') tenantId: string,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    const device = await this.devicesService.findById(tenantId, id);
+    if (!device) return errorResponse('Device not found');
+
+    const allocations = await this.portAllocation.getActiveAllocations(id);
+    const host = process.env.RATHOLE_PUBLIC_HOST ?? 'api.datadesng.com';
+
+    return successResponse(
+      allocations.map(a => ({
+        ...a,
+        host,
+        address: `${host}:${a.remotePort}`,
+      })),
+    );
   }
 
   @Delete(':id')

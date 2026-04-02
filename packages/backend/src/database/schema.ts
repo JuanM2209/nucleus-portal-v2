@@ -304,6 +304,23 @@ export const userPreferences = pgTable('user_preferences', {
   timezone: varchar('timezone', { length: 100 }).notNull().default('UTC'),
 });
 
+// ── Port Allocations (Rathole V2 transport) ──
+
+export const portAllocations = pgTable('port_allocations', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  deviceId: uuid('device_id').notNull().references(() => devices.id, { onDelete: 'cascade' }),
+  targetPort: integer('target_port').notNull(),
+  remotePort: integer('remote_port').notNull().unique(),
+  serviceName: varchar('service_name', { length: 100 }).notNull(),
+  status: varchar('status', { length: 20 }).notNull().default('active'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }),
+}, (table) => [
+  uniqueIndex('port_alloc_device_port_idx').on(table.deviceId, table.targetPort),
+  index('idx_port_alloc_status').on(table.status),
+  index('idx_port_alloc_remote').on(table.remotePort),
+]);
+
 // ── Agent Heartbeats ──
 
 export const agentHeartbeats = pgTable('agent_heartbeats', {

@@ -7,6 +7,8 @@ pub struct AgentConfig {
     pub heartbeat: HeartbeatConfig,
     pub discovery: DiscoveryConfig,
     pub tunnel: TunnelConfig,
+    #[serde(default)]
+    pub rathole: RatholeConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -40,6 +42,32 @@ pub struct TunnelConfig {
     #[serde(default = "default_max_concurrent")]
     pub max_concurrent: usize,
 }
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RatholeConfig {
+    #[serde(default = "default_rathole_binary")]
+    pub binary_path: String,
+    #[serde(default = "default_rathole_config_path")]
+    pub config_path: String,
+    #[serde(default)]
+    pub server_addr: Option<String>,
+    #[serde(default)]
+    pub token: Option<String>,
+}
+
+impl Default for RatholeConfig {
+    fn default() -> Self {
+        Self {
+            binary_path: default_rathole_binary(),
+            config_path: default_rathole_config_path(),
+            server_addr: None,
+            token: None,
+        }
+    }
+}
+
+fn default_rathole_binary() -> String { "/usr/local/bin/rathole".to_string() }
+fn default_rathole_config_path() -> String { "/etc/nucleus/rathole/client.toml".to_string() }
 
 fn default_heartbeat_interval() -> u64 { 15 } // 15s for cellular keepalive
 fn default_passive_interval() -> u64 { 300 }
@@ -78,6 +106,7 @@ impl Default for AgentConfig {
             tunnel: TunnelConfig {
                 max_concurrent: default_max_concurrent(),
             },
+            rathole: RatholeConfig::default(),
         }
     }
 }

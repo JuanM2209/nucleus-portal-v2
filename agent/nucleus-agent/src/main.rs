@@ -6,6 +6,7 @@ mod config;
 mod connection;
 mod health;
 mod mbusd;
+mod rathole;
 mod scanner;
 mod tunnel;
 

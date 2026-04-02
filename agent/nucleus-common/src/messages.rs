@@ -95,6 +95,18 @@ pub enum ServerToAgent {
         #[serde(default)]
         payload: Option<TcpStreamPayload>,
     },
+
+    // Rathole port management (V2 transport)
+    #[serde(rename = "port_expose")]
+    PortExpose {
+        service_name: String,
+        local_addr: String,
+        remote_port: u16,
+    },
+    #[serde(rename = "port_unexpose")]
+    PortUnexpose {
+        service_name: String,
+    },
 }
 
 /// Endpoint health check — list of targets to TCP-probe
@@ -336,5 +348,21 @@ pub enum AgentToServer {
     TcpStreamClosed {
         session_id: String,
         stream_id: u32,
+    },
+
+    // Rathole port management responses (V2 transport)
+    #[serde(rename = "port_exposed")]
+    PortExposed {
+        service_name: String,
+        remote_port: u16,
+    },
+    #[serde(rename = "port_unexposed")]
+    PortUnexposeConfirm {
+        service_name: String,
+    },
+    #[serde(rename = "port_error")]
+    PortError {
+        service_name: String,
+        error: String,
     },
 }

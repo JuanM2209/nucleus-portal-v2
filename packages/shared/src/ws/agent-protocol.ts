@@ -23,11 +23,26 @@ export interface PingMessage {
   type: 'ping';
 }
 
+// Rathole V2 transport messages
+export interface PortExposeMessage {
+  type: 'port_expose';
+  service_name: string;
+  local_addr: string;
+  remote_port: number;
+}
+
+export interface PortUnexposeMessage {
+  type: 'port_unexpose';
+  service_name: string;
+}
+
 export type ServerToAgentMessage =
   | SessionOpenMessage
   | SessionCloseMessage
   | DiscoveryTriggerMessage
-  | PingMessage;
+  | PingMessage
+  | PortExposeMessage
+  | PortUnexposeMessage;
 
 // ── Agent → Server Messages ──
 
@@ -100,13 +115,34 @@ export interface PongMessage {
   type: 'pong';
 }
 
+// Rathole V2 transport responses
+export interface PortExposedMessage {
+  type: 'port_exposed';
+  service_name: string;
+  remote_port: number;
+}
+
+export interface PortUnexposeConfirmMessage {
+  type: 'port_unexposed';
+  service_name: string;
+}
+
+export interface PortErrorMessage {
+  type: 'port_error';
+  service_name: string;
+  error: string;
+}
+
 export type AgentToServerMessage =
   | HeartbeatMessage
   | SessionReadyMessage
   | SessionErrorMessage
   | SessionClosedMessage
   | DiscoveryResultMessage
-  | PongMessage;
+  | PongMessage
+  | PortExposedMessage
+  | PortUnexposeConfirmMessage
+  | PortErrorMessage;
 
 // ── Binary Frame Protocol ──
 // Binary frames use a simple multiplexing protocol:
