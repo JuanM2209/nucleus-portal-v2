@@ -5,8 +5,8 @@ mod comms;
 mod config;
 mod connection;
 mod health;
+mod chisel;
 mod mbusd;
-mod rathole;
 mod scanner;
 mod tunnel;
 

@@ -5,6 +5,7 @@ import { WsAdapter } from '@nestjs/platform-ws';
 import { TunnelProxyService } from './tunnels/tunnel-proxy.service';
 import { GlobalExceptionFilter } from './common/filters/http-exception.filter';
 import type { IncomingMessage, ServerResponse } from 'http';
+import * as http from 'http';
 import type { Socket } from 'net';
 
 // Prevent backend crashes from unhandled exceptions in bridge/tunnel system.
@@ -129,7 +130,42 @@ async function bootstrap() {
       return;
     }
 
-    // 3. Tunnel client WebSocket — /ws/tunnel?token=...
+    // 3. Chisel tunnel proxy — /chisel
+    //    Proxies WebSocket upgrade to local chisel server for TCP port forwarding.
+    //    Chisel client on device connects via wss://api.datadesng.com/chisel
+    if (req.url?.startsWith('/chisel')) {
+      const chiselPort = process.env.CHISEL_PORT ?? '2340';
+      const proxyReq = http.request({
+        hostname: '127.0.0.1',
+        port: parseInt(chiselPort, 10),
+        path: req.url.replace(/^\/chisel/, '') || '/',
+        method: req.method,
+        headers: req.headers,
+      });
+      proxyReq.on('upgrade', (proxyRes, proxySocket, proxyHead) => {
+        // Send the 101 response back to the original client
+        const responseHeaders = ['HTTP/1.1 101 Switching Protocols'];
+        for (const [key, val] of Object.entries(proxyRes.headers)) {
+          if (val) responseHeaders.push(`${key}: ${Array.isArray(val) ? val.join(', ') : val}`);
+        }
+        responseHeaders.push('', '');
+        socket.write(responseHeaders.join('\r\n'));
+        if (proxyHead.length > 0) socket.write(proxyHead);
+        // Bidirectional pipe
+        proxySocket.pipe(socket);
+        socket.pipe(proxySocket);
+        proxySocket.on('error', () => socket.destroy());
+        socket.on('error', () => proxySocket.destroy());
+      });
+      proxyReq.on('error', () => {
+        socket.write('HTTP/1.1 502 Bad Gateway\r\n\r\n');
+        socket.destroy();
+      });
+      proxyReq.end();
+      return;
+    }
+
+    // 4. Tunnel client WebSocket — /ws/tunnel?token=...
     //    Used by @nucleus/tunnel CLI for local port forwarding
     if (req.url?.startsWith('/ws/tunnel')) {
       proxyService.handleTunnelClientUpgrade(req, socket, head);

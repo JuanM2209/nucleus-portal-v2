@@ -1,7 +1,7 @@
+use crate::chisel::ChiselManager;
 use crate::config::AgentConfig;
 use crate::comms::CommsManager;
 use crate::mbusd::MbusdManager;
-use crate::rathole::RatholeManager;
 use crate::tunnel::TunnelManager;
 use futures_util::{SinkExt, StreamExt};
 use nucleus_common::messages::{AgentToServer, ServerToAgent};
@@ -57,27 +57,26 @@ async fn connect_and_run(config: &AgentConfig) -> Result<(), Box<dyn std::error:
     let mut comms_mgr = CommsManager::new(tx.clone());
     let mut mbusd_mgr = MbusdManager::new(tx.clone());
 
-    // Rathole manager for V2 transport
-    let rathole_server = config.rathole.server_addr.clone()
-        .or_else(|| std::env::var("RATHOLE_SERVER_ADDR").ok())
+    // Chisel manager for V2 TCP transport (via Cloudflare Tunnel WebSocket)
+    let chisel_url = config.chisel.server_url.clone()
+        .or_else(|| std::env::var("CHISEL_SERVER_URL").ok())
         .unwrap_or_else(|| {
-            // Derive from WS URL: same host, port 2333 (direct TCP)
+            // Derive from WS URL: same host + /chisel path
             let host = config.server.url
-                .replace("wss://", "").replace("ws://", "")
-                .split('/').next().unwrap_or("localhost").to_string()
-                .split(':').next().unwrap_or("localhost").to_string();
-            format!("{}:2333", host)
+                .replace("wss://", "https://").replace("ws://", "http://")
+                .split("/ws/").next().unwrap_or("https://localhost:3001").to_string();
+            format!("{}/chisel", host)
         });
-    let rathole_token = config.rathole.token.clone()
-        .or_else(|| std::env::var("RATHOLE_TOKEN").ok())
-        .unwrap_or_else(|| config.server.token.clone());
-    let mut rathole_mgr = RatholeManager::new(
-        &config.rathole,
-        &rathole_server,
-        &rathole_token,
+    let chisel_auth = config.chisel.auth.clone()
+        .or_else(|| std::env::var("CHISEL_AUTH").ok())
+        .unwrap_or_else(|| "nucleus:nucleus".to_string());
+    let mut chisel_mgr = ChiselManager::new(
+        &config.chisel.binary_path,
+        &chisel_url,
+        &chisel_auth,
         tx.clone(),
     );
-    rathole_mgr.start().await;
+    chisel_mgr.start().await;
 
     // Writer task: drains the channel and sends messages through the WS
     let writer_handle = tokio::spawn(ws_writer_task(ws_write, rx));
@@ -127,7 +126,7 @@ async fn connect_and_run(config: &AgentConfig) -> Result<(), Box<dyn std::error:
 
         match msg {
             Message::Text(text) => {
-                handle_text_message(&text, &mut tunnel_mgr, &mut comms_mgr, &mut mbusd_mgr, &mut rathole_mgr, &tx).await;
+                handle_text_message(&text, &mut tunnel_mgr, &mut comms_mgr, &mut mbusd_mgr, &mut chisel_mgr, &tx).await;
             }
             Message::Binary(data) => {
                 handle_binary_frame(&data, &mut tunnel_mgr).await;
@@ -148,7 +147,7 @@ async fn connect_and_run(config: &AgentConfig) -> Result<(), Box<dyn std::error:
     heartbeat_handle.abort();
     comms_mgr.close_all();
     mbusd_mgr.cleanup();
-    rathole_mgr.stop();
+    chisel_mgr.stop();
     tunnel_mgr.close_all().await;
     // Drop tx so the writer task's rx completes
     drop(tx);
@@ -182,7 +181,7 @@ async fn handle_text_message(
     tunnel_mgr: &mut TunnelManager,
     comms_mgr: &mut CommsManager,
     mbusd_mgr: &mut MbusdManager,
-    rathole_mgr: &mut RatholeManager,
+    chisel_mgr: &mut ChiselManager,
     tx: &mpsc::UnboundedSender<Message>,
 ) {
     match serde_json::from_str::<ServerToAgent>(text) {
@@ -288,12 +287,12 @@ async fn handle_text_message(
         Ok(ServerToAgent::MbusdStatusReq) => {
             mbusd_mgr.status();
         }
-        // Rathole V2 transport
+        // Chisel V2 transport
         Ok(ServerToAgent::PortExpose { service_name, local_addr, remote_port }) => {
-            rathole_mgr.expose_port(&service_name, &local_addr, remote_port);
+            chisel_mgr.expose_port(&service_name, &local_addr, remote_port);
         }
         Ok(ServerToAgent::PortUnexpose { service_name }) => {
-            rathole_mgr.unexpose_port(&service_name);
+            chisel_mgr.unexpose_port(&service_name);
         }
         Err(e) => {
             warn!("Failed to parse control message: {} — raw: {}", e, text);

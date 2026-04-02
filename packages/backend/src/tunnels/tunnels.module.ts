@@ -6,7 +6,7 @@ import { ExposureService } from './exposure.service';
 import { CommsRelayService } from './comms-relay.service';
 import { SessionCleanupService } from './session-cleanup.service';
 import { PortAllocationService } from './port-allocation.service';
-import { RatholeConfigService } from './rathole-config.service';
+import { ChiselConfigService } from './chisel-config.service';
 import { AgentGatewayModule } from '../agent-gateway/agent-gateway.module';
 import { AuditModule } from '../audit/audit.module';
 import { LogsModule } from '../logs/logs.module';
@@ -20,8 +20,8 @@ import { LogsModule } from '../logs/logs.module';
     ExposureService,
     SessionCleanupService,
     PortAllocationService,
-    RatholeConfigService,
+    ChiselConfigService,
   ],
-  exports: [TunnelsService, TunnelProxyService, ExposureService, PortAllocationService, RatholeConfigService],
+  exports: [TunnelsService, TunnelProxyService, ExposureService, PortAllocationService, ChiselConfigService],
 })
 export class TunnelsModule {}

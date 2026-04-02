@@ -1,12 +1,9 @@
 #!/bin/bash
-# Nucleus Agent V2 (vr25) — One-line installer for N-1065
-# Includes rathole client for direct TCP port forwarding
+# Nucleus Agent V2 — One-line installer for N-1065
+# Includes chisel client for direct TCP port forwarding via Cloudflare Tunnel
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/JuanM2209/nucleus-portal-v2/master/scripts/install-agent-v2.sh | bash
-#
-# With explicit token:
-#   AGENT_TOKEN=<uuid> curl -fsSL ... | bash
 set -e
 
 IMAGE="nucleus-agent:v2"
@@ -14,13 +11,13 @@ TAR_URL="https://github.com/JuanM2209/nucleus-agent-releases/releases/download/v
 CONTAINER="remote-s"
 SERVER="${AGENT_SERVER_URL:-wss://api.datadesng.com/ws/agent}"
 DEVICE="${AGENT_TOKEN:-$(cat /data/nucleus/factory/nucleus_serial_number 2>/dev/null)}"
-RATHOLE_TK="${RATHOLE_TOKEN:-cde41b29ecba087ace1af210a2cfa88a43d64be1dd64e482019b84fdb137d3a7}"
-RATHOLE_ADDR="${RATHOLE_SERVER_ADDR:-75.109.165.86:2333}"
+CHISEL_CRED="${CHISEL_AUTH:-nucleus:d0f8884fd9676ea03d9230f36ac48769}"
+CHISEL_URL="${CHISEL_SERVER_URL:-https://api.datadesng.com/chisel}"
 
 echo ""
 echo "╔═══════════════════════════════════════╗"
 echo "║   Nucleus Agent V2 Installer          ║"
-echo "║   (with Rathole transport)            ║"
+echo "║   (with Chisel TCP transport)         ║"
 echo "╚═══════════════════════════════════════╝"
 echo ""
 echo "  Device: ${DEVICE:-UNKNOWN}"
@@ -51,8 +48,8 @@ docker run -d \
   -v /sys/class/net:/sys/class/net:ro \
   -e AGENT_SERVER_URL="$SERVER" \
   -e AGENT_TOKEN="$DEVICE" \
-  -e RATHOLE_TOKEN="$RATHOLE_TK" \
-  -e RATHOLE_SERVER_ADDR="$RATHOLE_ADDR" \
+  -e CHISEL_AUTH="$CHISEL_CRED" \
+  -e CHISEL_SERVER_URL="$CHISEL_URL" \
   "$IMAGE"
 
 echo ""
@@ -67,4 +64,3 @@ echo "║   Agent V2 deployed: ${STATUS}            ║"
 echo "╚═══════════════════════════════════════╝"
 echo ""
 echo "Logs: docker logs -f $CONTAINER"
-echo "Rathole client runs inside the container (managed by agent)"

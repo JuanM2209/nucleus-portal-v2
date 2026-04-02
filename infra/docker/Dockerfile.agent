@@ -1,4 +1,4 @@
-# Nucleus Agent vr24 — ARM cross-compile + runtime
+# Nucleus Agent V2 — ARM cross-compile + chisel client
 FROM rust:1.84-slim-bookworm AS builder
 
 RUN apt-get update && apt-get install -y \
@@ -16,20 +16,19 @@ ENV CC_armv7_unknown_linux_musleabihf=arm-linux-gnueabihf-gcc
 
 WORKDIR /build
 
-# Copy full agent source and build in one step (no dummy file tricks)
+# Copy full agent source and build in one step
 COPY agent/ agent/
 
 RUN cd agent && cargo build --release --target armv7-unknown-linux-musleabihf
 
-# ── Download rathole ARM binary ──
-FROM alpine:3.19 AS rathole-dl
-RUN apk add --no-cache curl unzip
-RUN curl -fsSL "https://github.com/rapiz1/rathole/releases/download/v0.5.0/rathole-arm-unknown-linux-musleabihf.zip" \
-      -o /tmp/rathole.zip && \
-    unzip /tmp/rathole.zip -d /tmp/rathole && \
-    chmod +x /tmp/rathole/rathole
+# ── Cross-compile chisel for ARM32 ──
+FROM golang:1.23-bookworm AS chisel-builder
+WORKDIR /build
+RUN git clone --depth 1 --branch v1.10.1 https://github.com/jpillora/chisel.git .
+RUN GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=0 \
+    go build -ldflags="-s -w" -o /chisel .
 
-# ── Runtime stage: Debian slim for ARM (mbusd needs glibc) ──
+# ── Runtime stage: Debian slim for ARM ──
 FROM arm32v7/debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -37,13 +36,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /build/agent/target/armv7-unknown-linux-musleabihf/release/nucleus-agent /usr/local/bin/nucleus-agent
-COPY --from=rathole-dl /tmp/rathole/rathole /usr/local/bin/rathole
+COPY --from=chisel-builder /chisel /usr/local/bin/chisel
 
 COPY agent/mbusd-arm /usr/local/bin/mbusd
 COPY agent/agent.example.toml /etc/nucleus/agent.toml
 
-RUN chmod +x /usr/local/bin/nucleus-agent /usr/local/bin/mbusd /usr/local/bin/rathole && \
-    mkdir -p /etc/nucleus/rathole
+RUN chmod +x /usr/local/bin/nucleus-agent /usr/local/bin/mbusd /usr/local/bin/chisel
 
 ENTRYPOINT ["nucleus-agent"]
 CMD ["--config", "/etc/nucleus/agent.toml"]

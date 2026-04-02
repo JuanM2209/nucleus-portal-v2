@@ -2,7 +2,7 @@ import { Controller, Get, Post, Patch, Delete, Param, Body, Query, UseGuards, Pa
 import { DevicesService } from './devices.service';
 import { AgentRegistryService } from '../agent-gateway/agent-registry.service';
 import { PortAllocationService } from '../tunnels/port-allocation.service';
-import { RatholeConfigService } from '../tunnels/rathole-config.service';
+import { ChiselConfigService } from '../tunnels/chisel-config.service';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { successResponse, paginatedResponse, errorResponse } from '../common/types/api-response';
@@ -27,7 +27,7 @@ export class DevicesController implements OnModuleDestroy {
     private readonly devicesService: DevicesService,
     private readonly agentRegistry: AgentRegistryService,
     private readonly portAllocation: PortAllocationService,
-    private readonly ratholeConfig: RatholeConfigService,
+    private readonly chiselConfig: ChiselConfigService,
   ) {
     this.bridgeEvents.setMaxListeners(50);
     // Listen for mbusd responses from AgentGateway via process events
@@ -279,7 +279,7 @@ export class DevicesController implements OnModuleDestroy {
     const allocation = await this.portAllocation.allocatePort(id, port);
 
     // Add to rathole server config (hot-reload)
-    this.ratholeConfig.addService(allocation.serviceName, allocation.remotePort);
+    this.chiselConfig.addService(allocation.serviceName, allocation.remotePort);
 
     // Send port_expose command to agent
     const targetIp = body.targetIp || '127.0.0.1';
@@ -290,7 +290,7 @@ export class DevicesController implements OnModuleDestroy {
       remote_port: allocation.remotePort,
     }));
 
-    const host = process.env.RATHOLE_PUBLIC_HOST ?? process.env.PORTAL_URL?.replace('https://', '').replace('http://', '') ?? 'api.datadesng.com';
+    const host = process.env.CHISEL_PUBLIC_HOST ?? process.env.PORTAL_URL?.replace('https://', '').replace('http://', '') ?? 'api.datadesng.com';
 
     this.logger.log(`Port exposed: device=${id} port=${port} → ${host}:${allocation.remotePort}`);
     return successResponse({
@@ -314,7 +314,7 @@ export class DevicesController implements OnModuleDestroy {
     if (!released) return errorResponse('No active allocation for this port');
 
     // Remove from rathole server config
-    this.ratholeConfig.removeService(released.serviceName);
+    this.chiselConfig.removeService(released.serviceName);
 
     // Send unexpose command to agent
     const socket = this.agentRegistry.getSocket(id);
@@ -338,7 +338,7 @@ export class DevicesController implements OnModuleDestroy {
     if (!device) return errorResponse('Device not found');
 
     const allocations = await this.portAllocation.getActiveAllocations(id);
-    const host = process.env.RATHOLE_PUBLIC_HOST ?? 'api.datadesng.com';
+    const host = process.env.CHISEL_PUBLIC_HOST ?? 'api.datadesng.com';
 
     return successResponse(
       allocations.map(a => ({
