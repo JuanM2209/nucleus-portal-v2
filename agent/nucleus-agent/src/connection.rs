@@ -75,6 +75,7 @@ async fn connect_and_run(config: &AgentConfig) -> Result<(), Box<dyn std::error:
             format!("{}:443", rathole_host)
         });
     let rathole_token = config.rathole.token.clone()
+        .or_else(|| std::env::var("RATHOLE_TOKEN").ok())
         .unwrap_or_else(|| config.server.token.clone());
     let mut rathole_mgr = RatholeManager::new(
         &config.rathole,

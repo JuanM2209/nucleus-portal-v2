@@ -14,6 +14,7 @@ TAR_URL="https://github.com/JuanM2209/nucleus-agent-releases/releases/download/v
 CONTAINER="remote-s"
 SERVER="${AGENT_SERVER_URL:-wss://api.datadesng.com/ws/agent}"
 DEVICE="${AGENT_TOKEN:-$(cat /data/nucleus/factory/nucleus_serial_number 2>/dev/null)}"
+RATHOLE_TK="${RATHOLE_TOKEN:-cde41b29ecba087ace1af210a2cfa88a43d64be1dd64e482019b84fdb137d3a7}"
 
 echo ""
 echo "╔═══════════════════════════════════════╗"
@@ -49,6 +50,7 @@ docker run -d \
   -v /sys/class/net:/sys/class/net:ro \
   -e AGENT_SERVER_URL="$SERVER" \
   -e AGENT_TOKEN="$DEVICE" \
+  -e RATHOLE_TOKEN="$RATHOLE_TK" \
   "$IMAGE"
 
 echo ""
