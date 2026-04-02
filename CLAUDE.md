@@ -11,7 +11,7 @@ nucleus-portal/
 │   ├── backend/        NestJS 10 + Drizzle ORM + PostgreSQL + Redis
 │   ├── frontend/       Next.js 14 + React 18 + Tailwind + TanStack Query
 │   ├── shared/         Zod schemas + domain types + WS protocols
-│   └── tunnel-client/  Node.js CLI for local port forwarding (TCP tunnel)
+│   └── tunnel-client/  (DEPRECATED — replaced by chisel TCP transport)
 ├── agent/              Rust (tokio) — device monitoring + tunnels + comms + scanner
 ├── helper/             Rust — desktop client tunnel handler
 ├── infra/              Docker Compose (Postgres 16, PgBouncer, Redis 7)
@@ -26,7 +26,7 @@ nucleus-portal/
 | Backend    | NestJS 10, Drizzle ORM, JWT, WebSocket, Zod        |
 | Database   | PostgreSQL 16 + TimescaleDB, PgBouncer, Redis 7    |
 | Edge       | Rust (tokio, tungstenite), cross-compiled ARM      |
-| Tunnel CLI | Node.js, WebSocket client, TCP server              |
+| Tunnel     | Chisel (TCP over WebSocket), port 2340, CF Tunnel  |
 | DevOps     | Turbo, pnpm workspaces, Docker Compose, Cloudflare |
 
 ## Dev Workflow
@@ -57,9 +57,8 @@ pnpm dev
 # Build Rust agent
 bash scripts/build-agent.sh
 
-# Tunnel CLI (local port forwarding)
-cd packages/tunnel-client
-nucleus-tunnel --token <TOKEN> --port <PORT>
+# Chisel server (runs on port 2340, proxied via /chisel in NestJS)
+# No separate CLI needed — chisel client runs inside the Rust agent
 ```
 
 ### 4. Database
@@ -72,6 +71,7 @@ pnpm db:seed               # seed dev data
 - Frontend:   http://localhost:3000
 - Backend:    http://localhost:3001/api
 - WebSocket:  ws://localhost:3001
+- Chisel:     ws://localhost:3001/chisel (WebSocket proxy to chisel server on port 2340)
 - Postgres:   localhost:5432
 - PgBouncer:  localhost:6432
 - Redis:      localhost:6379
@@ -113,15 +113,15 @@ NEXT_PUBLIC_TUNNEL_DOMAIN=tunnel.datadesng.com
 ## Backend Modules (12 + common)
 - `auth/`           JWT authentication + refresh tokens + tenant isolation
 - `agent-gateway/`  WebSocket gateway for Rust agents (ping/pong, heartbeats, sessions, bridge rebuild)
-- `devices/`        Device CRUD + registry + bridge control + metrics
-- `tunnels/`        Tunnel proxy + sessions + stream bridge + comms relay + exposure management
+- `devices/`        Device CRUD + registry + bridge control + metrics + port expose/unexpose endpoints
+- `tunnels/`        Tunnel proxy + sessions + stream bridge + comms relay + exposure management + chisel port allocation
   - `tunnels.service.ts`         Session CRUD, exposure orchestration, Cockpit health probe
   - `tunnel-proxy.service.ts`    HTTP/WS proxy with cache, retry, script injection, cookie rewriting
-  - `stream-bridge.service.ts`   Bidirectional WS↔TCP bridge pool + on-demand WS bridges
+  - `stream-bridge.service.ts`   Bidirectional WS<>TCP bridge pool + on-demand WS bridges
   - `exposure.service.ts`        Shared exposure lifecycle (find-or-create, attachments, idle TTL, cleanup cron)
   - `comms-relay.service.ts`     WS relay for device Node-RED /comms endpoints
   - `session-cleanup.service.ts` Cron job for stale session cleanup (production scale)
-  - `tunnel-ws.gateway.ts`       /ws/tunnel WebSocket endpoint for tunnel-client CLI
+  - `port-allocation.service.ts` Chisel port allocation + expose/unexpose via agent commands
 - `scanner/`        Port scanner + host discovery (8 services) + health check + service classifier
   - `host-discovery.service.ts`  Network scanning for active hosts
   - `port-scanner.service.ts`    TCP port enumeration
@@ -134,7 +134,7 @@ NEXT_PUBLIC_TUNNEL_DOMAIN=tunnel.datadesng.com
 - `settings/`       User preferences + org settings
 - `health/`         Health check endpoints + /health route
 - `agent-gateway/`  WebSocket server for agent connections
-- `database/`       Drizzle module + schema (21 tables)
+- `database/`       Drizzle module + schema (22 tables)
 - `db/`             Seed script
 - `common/`         Decorators, DTOs, filters, guards, middleware, pipes, types
 
@@ -196,20 +196,27 @@ NEXT_PUBLIC_TUNNEL_DOMAIN=tunnel.datadesng.com
 - `ws/agent-protocol.ts`       ServerToAgent / AgentToServer message enums
 - `ws/helper-protocol.ts`      Desktop client tunnel handler
 
-## Tunnel Client CLI (packages/tunnel-client)
-- `nucleus-tunnel` — Node.js CLI for local TCP port forwarding
-- Usage: `nucleus-tunnel --token <TOKEN> --port <LOCAL_PORT>`
-- Connects to backend via WebSocket at `/ws/tunnel?token=TOKEN`
-- Opens local TCP server, relays data bidirectionally through WS tunnel
-- Enables tools like Modbus Poll, PuTTY, PCCU to connect to remote device ports
+## Chisel TCP Transport (replaces tunnel-client CLI and rathole)
+- **Chisel server** runs on port 2340 on the backend host
+- **NestJS main.ts** proxies `/chisel` WebSocket path to the chisel server (allows chisel traffic through Cloudflare Tunnel without extra ports)
+- **Agent ChiselManager** (`agent/nucleus-agent/src/chisel.rs`) manages a chisel client process per device
+- On `port_expose` command: agent starts chisel client with reverse tunnel `R:<remotePort>:localhost:<localPort>`
+- On `port_unexpose` command: agent stops the chisel client for that port
+- No laptop CLI needed — users connect tools directly to `tunnel.datadesng.com:<remotePort>`
+- **API endpoints:**
+  - `POST /devices/:id/ports/:port/expose` — allocate remote port + send PortExpose to agent
+  - `DELETE /devices/:id/ports/:port/expose` — send PortUnexpose + release port
+  - `GET /devices/:id/ports` — list active port allocations for a device
+- **Install script:** `curl -fsSL https://raw.githubusercontent.com/JuanM2209/nucleus-deploy/main/install.sh | bash` (installs agent + chisel client binary)
 
 ## Rust Agent (agent/ + common crate)
-**Source Files (8 core modules):**
+**Source Files (9 core modules):**
 - `main.rs`         Entry point, arg parsing, config loading
 - `config.rs`       TOML config parsing (server, heartbeat, discovery, tunnel sections)
 - `connection.rs`   WebSocket connection management + auto-reconnect
 - `health.rs`       System metrics collection (CPU, memory, disk, network)
-- `tunnel.rs`       TCP port tunneling + bidirectional relay
+- `tunnel.rs`       TCP port tunneling + bidirectional relay (browser proxy)
+- `chisel.rs`       ChiselManager — starts/stops chisel client for port expose/unexpose
 - `comms.rs`        Node-RED /comms endpoint relay
 - `mbusd.rs`        Modbus TCP daemon integration
 - `scanner.rs`      Port enumeration + service discovery
@@ -224,15 +231,16 @@ NEXT_PUBLIC_TUNNEL_DOMAIN=tunnel.datadesng.com
 - Docker flags: `--privileged --pid=host --network host`
 - Cross-compile ARM: `docker buildx build --platform linux/arm/v7 -f infra/docker/Dockerfile.agent`
 - GitHub Release: `JuanM2209/nucleus-agent-releases` v0.24.0
-- Install: `curl -fsSL https://raw.githubusercontent.com/JuanM2209/nucleus-deploy/main/install.sh | bash`
+- Install: `curl -fsSL https://raw.githubusercontent.com/JuanM2209/nucleus-deploy/main/install.sh | bash` (agent + chisel client)
 
-**Tunnel CLI Protocol Selection:**
-- Port 22 (SSH): binary frames (avoids base64 corruption of encrypted packets)
-- All other ports: JSON proxy (`tcp_stream_open/data/close`) — proven stable for Modbus, HTTP
-- Persistent bridge auto-reconnect: re-opens `tcp_stream_open` when `activeRequest` is null
+**Chisel Transport (TCP over WebSocket):**
+- All ports use native TCP via chisel reverse tunnels (no base64, no JSON proxy)
+- Chisel client on device connects to chisel server via WebSocket through CF Tunnel
+- WebSocket path `/chisel` proxied in NestJS main.ts to localhost:2340
 - Agent keepalive: Ping frame every 20s (prevents Cloudflare ~100s idle disconnect)
+- No protocol-specific handling needed — TCP is TCP (SSH, Modbus, HTTP all work identically)
 
-## Database Schema (21 tables)
+## Database Schema (22 tables)
 
 **Authentication & Access:**
 - tenants, users, roles, permissions, role_permissions, user_roles, refresh_tokens
@@ -244,6 +252,7 @@ NEXT_PUBLIC_TUNNEL_DOMAIN=tunnel.datadesng.com
 **Tunnels & Sessions:**
 - **exposures** (1 per device+port, attachment-based sharing)
 - access_sessions (with cleanup cron for stale entries)
+- **port_allocations** (chisel remote port assignments per device+port, unique remote_port)
 
 **Audit & Monitoring:**
 - audit_events (security log trail)
@@ -279,12 +288,13 @@ Key features:
 
 ## Export Modal & Port Mapping
 
-The export modal enables local TCP forwarding via tunnel-client CLI:
-- Custom local port mapping (e.g., expose remote port 502 as local port 10502)
+The export modal enables direct TCP access via chisel (no CLI needed):
+- Click "Export" on a port card to expose it via chisel reverse tunnel
+- Backend allocates a remote port and sends PortExpose to agent via WebSocket
+- User connects tools directly to `tunnel.datadesng.com:<remotePort>`
 - Support for Modbus TCP, HTTP, SSH, and custom TCP services
-- Verified working: Modbus Poll ↔ remote Modbus TCP service
-- Copy-paste command or download script
-- Example: `nucleus-tunnel --token <TOKEN> --port 10502`
+- Verified working: all 7 ports passing (SSH, HTTP, Modbus, Node-RED, Cockpit, mbusd, EtherNet/IP)
+- Copy address to clipboard for pasting into Modbus Poll, PuTTY, etc.
 
 ## Production & Infrastructure
 
@@ -323,7 +333,7 @@ Vault: `Z:\NucleusVault\Nucleus\`
 Before implementing changes, consult the relevant Obsidian note for context:
 - Architecture & overview → `Nucleus/00-Overview.md`
 - API endpoints (REST + WS) → `Nucleus/01-API-Endpoints.md`
-- Database schema (21 tables) → `Nucleus/02-Database-Schema.md`
+- Database schema (22 tables) → `Nucleus/02-Database-Schema.md`
 - Tunnel/port forwarding system → `Nucleus/03-Tunnel-System.md`
 - Rust agent WebSocket protocol → `Nucleus/04-Agent-Protocol.md`
 - Frontend routes & components → `Nucleus/05-Frontend-Routes.md`

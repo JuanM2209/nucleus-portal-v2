@@ -1,5 +1,20 @@
 # Plan: Reemplazar Transport Layer con Rathole
 
+## OUTCOME (2026-04-02)
+
+**Rathole was implemented but FAILED.** Rathole requires a public IP with open TCP ports for its control channel (port 2333) and dynamic data ports (10000-19999). Our infrastructure runs behind Cloudflare Tunnel, which only proxies HTTP/WebSocket traffic -- not arbitrary TCP. Without a VPS or public IP with port forwarding, rathole cannot function.
+
+**Chisel was implemented instead.** Chisel tunnels TCP over WebSocket, which passes cleanly through Cloudflare Tunnel. The chisel server runs on port 2340 on the backend host, and NestJS proxies the `/chisel` WebSocket path to it. The agent runs a ChiselManager (`chisel.rs`) that starts/stops chisel client processes for each exposed port.
+
+**Final results:**
+- 7/7 ports passing: SSH, HTTP, Modbus TCP, Node-RED, Cockpit, mbusd, EtherNet/IP
+- All protocols working identically (native TCP, no base64/JSON encoding)
+- Latency: ~55ms (CF Tunnel overhead vs ~30ms direct, but far better than V1's ~230ms)
+- No public IP, VPS, or port forwarding required
+- No laptop CLI needed -- users connect tools directly to `tunnel.datadesng.com:<remotePort>`
+
+---
+
 ## Contexto
 
 El portal Nucleus funciona correctamente: auth, orgs, devices, sessions, audit, UI.
