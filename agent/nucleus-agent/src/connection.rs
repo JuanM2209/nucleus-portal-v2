@@ -60,12 +60,19 @@ async fn connect_and_run(config: &AgentConfig) -> Result<(), Box<dyn std::error:
     // Rathole manager for V2 transport
     let rathole_server = config.rathole.server_addr.clone()
         .unwrap_or_else(|| {
-            // Derive rathole server addr from WS URL (same host, port 2333)
+            // Default: rathole.datadesng.com:443 (via Cloudflare Tunnel + WebSocket)
             let host = config.server.url
                 .replace("wss://", "").replace("ws://", "")
                 .split('/').next().unwrap_or("localhost").to_string()
                 .split(':').next().unwrap_or("localhost").to_string();
-            format!("{}:2333", host)
+            // Replace "api." with "rathole." for the rathole subdomain
+            let rathole_host = if host.starts_with("api.") {
+                host.replacen("api.", "rathole.", 1)
+            } else {
+                format!("rathole.{}", host)
+            };
+            // Port 443 — goes through Cloudflare Tunnel (TLS + WebSocket)
+            format!("{}:443", rathole_host)
         });
     let rathole_token = config.rathole.token.clone()
         .unwrap_or_else(|| config.server.token.clone());
