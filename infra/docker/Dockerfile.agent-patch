@@ -1,0 +1,5 @@
+# Patch: add mbusd binary to existing nucleus-agent:vr24 image
+FROM nucleus-agent:vr24
+
+COPY agent/mbusd-arm /usr/local/bin/mbusd
+RUN chmod +x /usr/local/bin/mbusd

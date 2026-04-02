@@ -1,0 +1,82 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Manrope:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+  body {
+    @apply bg-background text-on-surface font-body;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  ::selection {
+    @apply bg-primary/30;
+  }
+}
+
+@layer components {
+  .glass-panel {
+    background: rgba(45, 52, 73, 0.15);
+    backdrop-filter: blur(12px);
+  }
+  .gradient-button {
+    background: linear-gradient(135deg, #adc6ff 0%, #4d8eff 100%);
+  }
+  .gradient-button:hover {
+    background: linear-gradient(135deg, #c2d5ff 0%, #6ba0ff 100%);
+  }
+  .network-grid {
+    background-image: radial-gradient(circle at 2px 2px, rgba(173, 198, 255, 0.05) 1px, transparent 0);
+    background-size: 40px 40px;
+  }
+  .material-symbols-outlined {
+    font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+  }
+}
+
+@layer utilities {
+  .pulse-glow {
+    animation: pulse-glow 2s infinite ease-in-out;
+  }
+  .pulse-orb {
+    animation: pulse-soft 2s infinite ease-in-out;
+  }
+}
+
+@keyframes pulse-glow {
+  0% { transform: scale(0.8); opacity: 0.5; box-shadow: 0 0 0 0 rgba(78, 222, 163, 0.7); }
+  70% { transform: scale(1.2); opacity: 1; box-shadow: 0 0 0 8px rgba(78, 222, 163, 0); }
+  100% { transform: scale(0.8); opacity: 0.5; box-shadow: 0 0 0 0 rgba(78, 222, 163, 0); }
+}
+
+@keyframes pulse-soft {
+  0% { opacity: 0.4; transform: scale(0.95); }
+  50% { opacity: 1; transform: scale(1.05); }
+  100% { opacity: 0.4; transform: scale(0.95); }
+}
+
+/* Login page entrance animations */
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(24px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fadeInLeft {
+  from { opacity: 0; transform: translateX(-32px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes fadeInRight {
+  from { opacity: 0; transform: translateX(32px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes indeterminate {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(350%); }
+}

@@ -1,0 +1,20 @@
+FROM node:20-alpine AS base
+RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
+
+WORKDIR /app
+
+COPY pnpm-workspace.yaml package.json pnpm-lock.yaml* ./
+COPY packages/shared/package.json packages/shared/
+COPY packages/backend/package.json packages/backend/
+
+RUN pnpm install --frozen-lockfile 2>/dev/null || pnpm install
+
+COPY tsconfig.base.json ./
+COPY packages/shared/ packages/shared/
+COPY packages/backend/ packages/backend/
+
+WORKDIR /app/packages/backend
+RUN pnpm build 2>/dev/null || echo "Build will be configured later"
+
+EXPOSE 3001
+CMD ["pnpm", "start:dev"]

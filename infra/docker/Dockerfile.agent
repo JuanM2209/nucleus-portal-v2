@@ -1,0 +1,39 @@
+# Nucleus Agent vr24 — ARM cross-compile + runtime
+FROM rust:1.84-slim-bookworm AS builder
+
+RUN apt-get update && apt-get install -y \
+    gcc-arm-linux-gnueabihf \
+    musl-tools \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+# Add ARM musl target
+RUN rustup target add armv7-unknown-linux-musleabihf
+
+# Configure cross-compilation linker
+ENV CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER=arm-linux-gnueabihf-gcc
+ENV CC_armv7_unknown_linux_musleabihf=arm-linux-gnueabihf-gcc
+
+WORKDIR /build
+
+# Copy full agent source and build in one step (no dummy file tricks)
+COPY agent/ agent/
+
+RUN cd agent && cargo build --release --target armv7-unknown-linux-musleabihf
+
+# ── Runtime stage: Debian slim for ARM (mbusd needs glibc) ──
+FROM arm32v7/debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /build/agent/target/armv7-unknown-linux-musleabihf/release/nucleus-agent /usr/local/bin/nucleus-agent
+
+COPY agent/mbusd-arm /usr/local/bin/mbusd
+COPY agent/agent.example.toml /etc/nucleus/agent.toml
+
+RUN chmod +x /usr/local/bin/nucleus-agent /usr/local/bin/mbusd
+
+ENTRYPOINT ["nucleus-agent"]
+CMD ["--config", "/etc/nucleus/agent.toml"]

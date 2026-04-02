@@ -1,0 +1,74 @@
+services:
+  postgres:
+    image: timescale/timescaledb:latest-pg16
+    environment:
+      POSTGRES_DB: nucleus
+      POSTGRES_USER: nucleus
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nucleus_dev}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql
+      - ./db/002-production-hardening.sql:/docker-entrypoint-initdb.d/02-production-hardening.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nucleus -d nucleus"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    # Production tuning for 3000 devices
+    command: >
+      postgres
+        -c shared_buffers=512MB
+        -c effective_cache_size=1536MB
+        -c work_mem=16MB
+        -c maintenance_work_mem=256MB
+        -c max_connections=200
+        -c checkpoint_completion_target=0.9
+        -c wal_buffers=16MB
+        -c random_page_cost=1.1
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  pgbouncer:
+    image: pgbouncer/pgbouncer:latest
+    environment:
+      DATABASES_HOST: postgres
+      DATABASES_PORT: "5432"
+      DATABASES_USER: nucleus
+      DATABASES_PASSWORD: ${POSTGRES_PASSWORD:-nucleus_dev}
+      DATABASES_DBNAME: nucleus
+      PGBOUNCER_POOL_MODE: transaction
+      PGBOUNCER_MAX_CLIENT_CONN: "2000"
+      PGBOUNCER_DEFAULT_POOL_SIZE: "100"
+      PGBOUNCER_RESERVE_POOL_SIZE: "20"
+      PGBOUNCER_RESERVE_POOL_TIMEOUT: "3"
+      PGBOUNCER_LISTEN_PORT: "6432"
+      PGBOUNCER_SERVER_IDLE_TIMEOUT: "600"
+      PGBOUNCER_QUERY_WAIT_TIMEOUT: "30"
+    ports:
+      - "127.0.0.1:6432:6432"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 6432 -U nucleus"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "127.0.0.1:6379:6379"
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru --requirepass ${REDIS_PASSWORD:-redis_dev} --tcp-backlog 511
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-redis_dev}", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:

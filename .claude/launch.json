@@ -1,0 +1,25 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "backend",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["exec", "nest", "start", "--watch"],
+      "port": 3001,
+      "env": {
+        "DATABASE_URL": "postgres://nucleus:nucleus_dev@localhost:5432/nucleus",
+        "JWT_SECRET": "dev-secret-nucleus-portal-2026",
+        "PORT": "3001",
+        "CORS_ORIGIN": "http://localhost:3000,https://portal.datadesng.com"
+      },
+      "cwd": "packages/backend"
+    },
+    {
+      "name": "frontend",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["dev"],
+      "port": 3000,
+      "cwd": "packages/frontend"
+    }
+  ]
+}

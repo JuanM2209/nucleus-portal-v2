@@ -1,0 +1,24 @@
+FROM rust:1.82-slim-bookworm
+
+RUN apt-get update && apt-get install -y \
+    gcc-arm-linux-gnueabihf \
+    musl-tools \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install musl cross toolchain for armv7
+RUN wget -q https://musl.cc/armv7l-linux-musleabihf-cross.tgz -O /tmp/musl-cross.tgz \
+    && tar -xzf /tmp/musl-cross.tgz -C /opt/ \
+    && rm /tmp/musl-cross.tgz
+
+ENV PATH="/opt/armv7l-linux-musleabihf-cross/bin:${PATH}"
+ENV CC_armv7_unknown_linux_musleabihf=armv7l-linux-musleabihf-gcc
+ENV AR_armv7_unknown_linux_musleabihf=armv7l-linux-musleabihf-ar
+ENV CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER=armv7l-linux-musleabihf-gcc
+
+RUN rustup target add armv7-unknown-linux-musleabihf
+
+WORKDIR /app
+COPY . .
+
+RUN cargo build --release --target armv7-unknown-linux-musleabihf -p nucleus-agent

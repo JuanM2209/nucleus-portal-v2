@@ -1,0 +1,42 @@
+
+> @nucleus/frontend@0.1.0 build Z:\nucleus-portal\packages\frontend
+> next build
+
+  ▲ Next.js 14.2.35
+  - Environments: .env.local
+
+   Creating an optimized production build ...
+ ✓ Compiled successfully
+   Linting and checking validity of types ...
+   Collecting page data ...
+   Generating static pages (0/14) ...
+   Generating static pages (3/14) 
+   Generating static pages (6/14) 
+   Generating static pages (10/14) 
+ ✓ Generating static pages (14/14)
+   Finalizing page optimization ...
+   Collecting build traces ...
+
+Route (app)                              Size     First Load JS
+┌ ○ /                                    143 B          87.9 kB
+├ ○ /_not-found                          876 B          88.7 kB
+├ ○ /admin                               7.54 kB         104 kB
+├ ○ /audit                               3.7 kB          100 kB
+├ ○ /dashboard                           8.92 kB         106 kB
+├ ○ /devices                             6.3 kB          112 kB
+├ ƒ /devices/[deviceId]                  23 kB           139 kB
+├ ○ /health                              4.79 kB         108 kB
+├ ○ /login                               10.5 kB        98.2 kB
+├ ○ /logs                                7.24 kB         104 kB
+├ ○ /sessions                            6.9 kB          104 kB
+├ ○ /settings                            12.8 kB         113 kB
+└ ○ /support                             3.72 kB        98.3 kB
++ First Load JS shared by all            87.8 kB
+  ├ chunks/5b8f0dd8-60b38ca6aba92e8b.js  53.6 kB
+  ├ chunks/749-7dad72b29e32a0cf.js       31.9 kB
+  └ other shared chunks (total)          2.24 kB
+
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+

@@ -1,0 +1,15 @@
+node_modules
+.next
+.turbo
+dist
+packages/frontend/.next
+packages/frontend/node_modules
+packages/backend/dist
+packages/backend/node_modules
+packages/shared/dist
+packages/shared/node_modules
+packages/tunnel-client/node_modules
+agent/target
+helper/target
+.git
+*.tar.gz
