@@ -115,7 +115,7 @@ async fn scan_host(ip: String, ports: &[u16], timeout: Duration) -> Option<Scann
     })
 }
 
-/// Run a network scan on the adapter's subnet
+/// Run a network scan on the adapter's subnet + always include localhost
 pub fn run_scan(
     tx: mpsc::UnboundedSender<Message>,
     adapter_name: String,
@@ -139,35 +139,42 @@ pub fn run_scan(
         );
 
         let start = Instant::now();
-        let ips = ip_range(&adapter_ip, &subnet_mask);
+        let mut hosts: Vec<ScannedHost> = Vec::new();
 
-        if ips.is_empty() {
-            warn!(adapter = %adapter_name, "No hosts to scan (invalid IP range)");
-            let _ = send_json(&tx, &AgentToServer::NetworkScanError {
-                adapter_name,
-                error: "No hosts in subnet range".to_string(),
-            });
-            return;
+        // Always scan localhost first (local services: SSH, Node-RED, Cockpit, etc.)
+        if let Some(localhost) = scan_host("127.0.0.1".to_string(), &ports, timeout).await {
+            info!(services = localhost.ports.len(), "Localhost scan found {} services", localhost.ports.len());
+            hosts.push(localhost);
         }
 
-        info!(adapter = %adapter_name, hosts = ips.len(), "Scanning {} hosts", ips.len());
-
-        // Scan hosts with concurrency control
-        let mut hosts: Vec<ScannedHost> = Vec::new();
-        for chunk in ips.chunks(concurrency) {
-            let mut tasks = Vec::new();
-            for ip in chunk {
-                let ip = ip.clone();
-                let ports_owned = ports.clone();
-                tasks.push(tokio::spawn(async move {
-                    scan_host(ip, &ports_owned, timeout).await
-                }));
-            }
-            for task in tasks {
-                if let Ok(Some(host)) = task.await {
-                    hosts.push(host);
+        // Then scan the subnet if we have a valid IP range
+        let ips = ip_range(&adapter_ip, &subnet_mask);
+        if !ips.is_empty() {
+            info!(adapter = %adapter_name, hosts = ips.len(), "Scanning {} hosts", ips.len());
+            for chunk in ips.chunks(concurrency) {
+                let mut tasks = Vec::new();
+                for ip in chunk {
+                    let ip = ip.clone();
+                    let ports_owned = ports.clone();
+                    tasks.push(tokio::spawn(async move {
+                        scan_host(ip, &ports_owned, timeout).await
+                    }));
+                }
+                for task in tasks {
+                    if let Ok(Some(host)) = task.await {
+                        hosts.push(host);
+                    }
                 }
             }
+        }
+
+        if hosts.is_empty() {
+            warn!(adapter = %adapter_name, "No hosts found (no localhost services and no subnet hosts)");
+            let _ = send_json(&tx, &AgentToServer::NetworkScanError {
+                adapter_name,
+                error: "No hosts found".to_string(),
+            });
+            return;
         }
 
         let duration = start.elapsed().as_millis() as u64;
@@ -184,6 +191,39 @@ pub fn run_scan(
             scan_type: scan_type.to_string(),
             duration_ms: duration,
         });
+    });
+}
+
+/// Run a localhost-only scan (no adapter IP needed).
+/// Used for auto-discovery on agent connect.
+pub fn run_localhost_scan(
+    tx: mpsc::UnboundedSender<Message>,
+    adapter_name: String,
+) {
+    tokio::spawn(async move {
+        let ports = get_ports("standard");
+        let timeout = Duration::from_millis(1000);
+
+        info!("Starting localhost auto-discovery scan ({} ports)", ports.len());
+        let start = Instant::now();
+        let mut hosts: Vec<ScannedHost> = Vec::new();
+
+        if let Some(localhost) = scan_host("127.0.0.1".to_string(), &ports, timeout).await {
+            info!(services = localhost.ports.len(), "Localhost: {} services found", localhost.ports.len());
+            hosts.push(localhost);
+        }
+
+        let duration = start.elapsed().as_millis() as u64;
+        info!(hosts_found = hosts.len(), duration_ms = duration, "Localhost scan complete");
+
+        if !hosts.is_empty() {
+            let _ = send_json(&tx, &AgentToServer::NetworkScanResult {
+                adapter_name,
+                hosts,
+                scan_type: "auto".to_string(),
+                duration_ms: duration,
+            });
+        }
     });
 }
 

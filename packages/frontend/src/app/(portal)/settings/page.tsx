@@ -42,7 +42,17 @@ import {
   useRemoveOrgMember,
 } from '@/hooks/use-admin';
 import { useDevices } from '@/hooks/use-device';
-import { usePreferences, useUpdatePreferences } from '@/hooks/use-settings';
+import {
+  usePreferences,
+  useUpdatePreferences,
+  usePendingDevices,
+  useApproveDevice,
+  useDenyDevice,
+  useApprovalPolicy,
+  useUpdateApprovalPolicy,
+  useScanSettings,
+  useUpdateScanSettings,
+} from '@/hooks/use-settings';
 
 /* ─── Types ─── */
 
@@ -180,14 +190,6 @@ function GeneralTab() {
   const prefs = prefsData?.data ?? {};
 
   const [displayName, setDisplayName] = useState(user?.displayName ?? '');
-  const [sessionDuration, setSessionDuration] = useState<string>(() => {
-    const h = prefs.sessionDurationHours;
-    return h ? `${h}h` : '4h';
-  });
-  const [customDuration, setCustomDuration] = useState('');
-  const [maxConcurrentSessions, setMaxConcurrentSessions] = useState(() => prefs.maxConcurrentSessions ?? 3);
-  const [autoDisconnect, setAutoDisconnect] = useState(() => prefs.autoDisconnect ?? true);
-  const [idleMinutes, setIdleMinutes] = useState(() => prefs.idleMinutes ?? 30);
   const [emailNotifications, setEmailNotifications] = useState(() => prefs.notificationsEnabled ?? true);
   const [sessionExpiryAlerts, setSessionExpiryAlerts] = useState(true);
   const [timezone, setTimezone] = useState(() => prefs.timezone ?? 'UTC');
@@ -195,22 +197,15 @@ function GeneralTab() {
 
   // Sync state when prefs load from backend
   useEffect(() => {
-    if (prefs.sessionDurationHours) {
-      setSessionDuration(`${prefs.sessionDurationHours}h`);
-    }
     if (prefs.timezone) setTimezone(prefs.timezone);
     if (prefs.notificationsEnabled !== undefined) setEmailNotifications(prefs.notificationsEnabled);
-    if (prefs.maxConcurrentSessions !== undefined) setMaxConcurrentSessions(prefs.maxConcurrentSessions);
-  }, [prefs.sessionDurationHours, prefs.timezone, prefs.notificationsEnabled, prefs.maxConcurrentSessions]);
+  }, [prefs.timezone, prefs.notificationsEnabled]);
 
   function handleSave() {
-    const durationMatch = sessionDuration.match(/^(\d+)h$/);
-    const hours = durationMatch ? Number(durationMatch[1]) : 4;
     updatePrefsMutation.mutate(
       {
         theme,
         timezone,
-        sessionDurationHours: hours,
         notificationsEnabled: emailNotifications,
       },
       {
@@ -274,90 +269,6 @@ function GeneralTab() {
               <span className="text-sm text-on-surface-variant ml-2">
                 Currently: <span className="font-technical text-on-surface">{theme}</span>
               </span>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* Session Defaults */}
-      <section className="bg-surface-container-low rounded-xl p-6">
-        <div className="flex items-center gap-3 mb-5">
-          <div className="p-2 bg-tertiary/10 rounded-lg">
-            <Clock className="w-5 h-5 text-tertiary" />
-          </div>
-          <h2 className="font-headline font-bold text-on-surface text-lg">Session Defaults</h2>
-        </div>
-
-        <div className="space-y-5">
-          <div>
-            <label className="text-sm text-on-surface-variant font-medium mb-2 block">
-              Default Session Duration
-            </label>
-            <div className="flex flex-wrap gap-2">
-              {SESSION_DURATION_OPTIONS.map((opt) => (
-                <button
-                  key={opt}
-                  onClick={() => setSessionDuration(opt)}
-                  className={`px-3 py-1.5 rounded-xl text-sm font-medium transition-colors ${
-                    sessionDuration === opt
-                      ? 'bg-tertiary/20 text-tertiary'
-                      : 'bg-surface-container-highest text-on-surface-variant hover:bg-surface-container-high'
-                  }`}
-                >
-                  {opt}
-                </button>
-              ))}
-            </div>
-            {sessionDuration === 'Custom' && (
-              <input
-                type="text"
-                value={customDuration}
-                onChange={(e) => setCustomDuration(e.target.value)}
-                placeholder="e.g. 6h, 90m"
-                className="mt-2 bg-surface-container-highest rounded-xl px-4 py-2 text-sm text-on-surface font-body focus:outline-none focus:ring-2 focus:ring-tertiary/40 placeholder:text-outline-variant w-40"
-              />
-            )}
-          </div>
-
-          <div>
-            <label className="text-sm text-on-surface-variant font-medium mb-2 block">
-              Max Concurrent Sessions
-            </label>
-            <input
-              type="number"
-              min={1}
-              max={20}
-              value={maxConcurrentSessions}
-              onChange={(e) => setMaxConcurrentSessions(Number(e.target.value))}
-              className="bg-surface-container-highest rounded-xl px-4 py-2 text-sm text-on-surface font-body focus:outline-none focus:ring-2 focus:ring-tertiary/40 w-24"
-            />
-          </div>
-
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-on-surface font-medium">Auto-disconnect on idle</p>
-              <p className="text-xs text-on-surface-variant mt-0.5">
-                Automatically close sessions after inactivity
-              </p>
-            </div>
-            <div className="flex items-center gap-3">
-              {autoDisconnect && (
-                <input
-                  type="number"
-                  min={5}
-                  max={120}
-                  value={idleMinutes}
-                  onChange={(e) => setIdleMinutes(Number(e.target.value))}
-                  className="bg-surface-container-highest rounded-xl px-3 py-1.5 text-sm text-on-surface font-technical focus:outline-none focus:ring-2 focus:ring-tertiary/40 w-16 text-center"
-                />
-              )}
-              {autoDisconnect && (
-                <span className="text-xs text-on-surface-variant">min</span>
-              )}
-              <ToggleSwitch
-                checked={autoDisconnect}
-                onChange={setAutoDisconnect}
-              />
             </div>
           </div>
         </div>
@@ -1522,6 +1433,477 @@ function useUserOrgMap(orgs: readonly Org[]) {
   }, [orgs, org0.data, org1.data, org2.data, org3.data, org4.data]);
 }
 
+/* ─── Session Defaults (in Devices tab) ─── */
+
+/* ─── Device Registration & Approval Policy ─── */
+
+function DeviceRegistrationSection() {
+  const { data: policyData, isLoading: policyLoading } = useApprovalPolicy();
+  const { data: pendingData, isLoading: pendingLoading } = usePendingDevices();
+  const updatePolicyMutation = useUpdateApprovalPolicy();
+  const approveMutation = useApproveDevice();
+  const denyMutation = useDenyDevice();
+
+  const currentPolicy = policyData?.data?.policy ?? 'manual';
+  const pendingDevices: readonly any[] = pendingData?.data ?? [];
+
+  const policies = [
+    {
+      value: 'manual',
+      label: 'Manual Approval',
+      description: 'New devices require admin approval before connecting. You will see them in the pending list below.',
+      icon: <Shield className="w-4 h-4" />,
+    },
+    {
+      value: 'auto_approve',
+      label: 'Auto-Approve',
+      description: 'New devices are automatically registered and connected. Best for trusted networks.',
+      icon: <UserPlus className="w-4 h-4" />,
+    },
+    {
+      value: 'deny_all',
+      label: 'Deny All',
+      description: 'Reject all new device connections. Only pre-registered devices can connect.',
+      icon: <Ban className="w-4 h-4" />,
+    },
+  ] as const;
+
+  return (
+    <section className="bg-surface-container-low rounded-xl p-6">
+      <div className="flex items-center gap-3 mb-5">
+        <div className="p-2 bg-tertiary/10 rounded-lg">
+          <Shield className="w-5 h-5 text-tertiary" />
+        </div>
+        <div>
+          <h2 className="font-headline font-bold text-on-surface text-lg">Device Registration</h2>
+          <p className="text-xs text-on-surface-variant">Control how new devices are added to the portal</p>
+        </div>
+      </div>
+
+      {/* Policy Selection */}
+      <div className="space-y-3 mb-6">
+        <p className="text-xs font-technical text-on-surface-variant/60 uppercase tracking-wider">Approval Policy</p>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          {policies.map((p) => {
+            const isActive = currentPolicy === p.value;
+            return (
+              <button
+                key={p.value}
+                onClick={() => {
+                  if (!isActive) updatePolicyMutation.mutate(p.value);
+                }}
+                disabled={updatePolicyMutation.isPending}
+                className={`text-left p-4 rounded-xl border-2 transition-all ${
+                  isActive
+                    ? 'border-primary bg-primary/5'
+                    : 'border-outline-variant/10 hover:border-outline-variant/30 bg-surface-container-high/40'
+                } ${updatePolicyMutation.isPending ? 'opacity-50' : ''}`}
+              >
+                <div className="flex items-center gap-2 mb-2">
+                  <span className={isActive ? 'text-primary' : 'text-on-surface-variant/50'}>{p.icon}</span>
+                  <span className={`text-sm font-bold ${isActive ? 'text-primary' : 'text-on-surface'}`}>{p.label}</span>
+                  {isActive && <span className="ml-auto w-2 h-2 bg-primary rounded-full" />}
+                </div>
+                <p className="text-[11px] text-on-surface-variant leading-relaxed">{p.description}</p>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Pending Devices */}
+      {currentPolicy === 'manual' && (
+        <div>
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-xs font-technical text-on-surface-variant/60 uppercase tracking-wider">
+              Pending Devices
+              {pendingDevices.length > 0 && (
+                <span className="ml-2 inline-flex items-center justify-center w-5 h-5 rounded-full bg-[#f59e0b]/20 text-[#f59e0b] text-[10px] font-bold">
+                  {pendingDevices.length}
+                </span>
+              )}
+            </p>
+          </div>
+
+          {pendingLoading ? (
+            <div className="flex items-center gap-2 text-on-surface-variant text-sm py-4">
+              <Loader2 className="w-4 h-4 animate-spin" /> Checking for pending devices...
+            </div>
+          ) : pendingDevices.length === 0 ? (
+            <div className="bg-surface-container-high/40 rounded-xl p-6 text-center">
+              <p className="text-sm text-on-surface-variant/60">No devices waiting for approval</p>
+              <p className="text-xs text-on-surface-variant/40 mt-1">
+                When a new device connects with the agent installed, it will appear here
+              </p>
+            </div>
+          ) : (
+            <div className="bg-surface-container-high rounded-xl overflow-hidden">
+              <div className="grid grid-cols-[1fr_120px_120px_160px] gap-4 px-5 py-2.5 text-xs font-technical text-on-surface-variant/60 uppercase tracking-wider">
+                <span>Serial Number</span>
+                <span>IP Address</span>
+                <span>Requested</span>
+                <span>Actions</span>
+              </div>
+              {pendingDevices.map((pd: any) => (
+                <div key={pd.id} className="grid grid-cols-[1fr_120px_120px_160px] gap-4 px-5 py-3 text-sm hover:bg-surface-container-highest/50 transition-colors items-center border-t border-outline-variant/5">
+                  <div className="flex items-center gap-2">
+                    <Radar className="w-4 h-4 text-[#f59e0b]" />
+                    <span className="text-on-surface font-bold font-technical">{pd.serialNumber}</span>
+                  </div>
+                  <span className="text-on-surface-variant text-xs font-technical">{pd.ipAddress || '—'}</span>
+                  <span className="text-on-surface-variant text-xs font-technical">
+                    {new Date(pd.requestedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => approveMutation.mutate(pd.id)}
+                      disabled={approveMutation.isPending}
+                      className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-tertiary/10 text-tertiary text-xs font-bold hover:bg-tertiary/20 transition-colors disabled:opacity-50"
+                    >
+                      {approveMutation.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <UserPlus className="w-3 h-3" />}
+                      Approve
+                    </button>
+                    <button
+                      onClick={() => denyMutation.mutate(pd.id)}
+                      disabled={denyMutation.isPending}
+                      className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-error/10 text-error text-xs font-bold hover:bg-error/20 transition-colors disabled:opacity-50"
+                    >
+                      {denyMutation.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <Ban className="w-3 h-3" />}
+                      Deny
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {currentPolicy === 'auto_approve' && (
+        <div className="bg-tertiary/5 border border-tertiary/20 rounded-xl p-4 flex items-start gap-3">
+          <AlertTriangle className="w-4 h-4 text-tertiary mt-0.5 shrink-0" />
+          <div>
+            <p className="text-sm text-on-surface font-medium">Auto-approve is active</p>
+            <p className="text-xs text-on-surface-variant mt-1">
+              Any device with the agent installed will be automatically added to the portal.
+              Make sure your network is trusted.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {currentPolicy === 'deny_all' && (
+        <div className="bg-error/5 border border-error/20 rounded-xl p-4 flex items-start gap-3">
+          <Ban className="w-4 h-4 text-error mt-0.5 shrink-0" />
+          <div>
+            <p className="text-sm text-on-surface font-medium">All new connections are denied</p>
+            <p className="text-xs text-on-surface-variant mt-1">
+              Only devices already registered in the portal can connect. New agents will be rejected.
+            </p>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ScanSettingsSection() {
+  const { data: scanData, isLoading } = useScanSettings();
+  const updateMutation = useUpdateScanSettings();
+
+  const settings = scanData?.data ?? {};
+  const staleThreshold = settings.endpointStaleThresholdSeconds ?? 45;
+  const autoScanInterval = settings.autoScanIntervalSeconds ?? 300;
+
+  const [localStale, setLocalStale] = useState<number>(staleThreshold);
+  const [localInterval, setLocalInterval] = useState<number>(autoScanInterval);
+  const [saveSuccess, setSaveSuccess] = useState(false);
+
+  // Sync from backend when data arrives
+  useEffect(() => {
+    if (scanData?.data) {
+      setLocalStale(scanData.data.endpointStaleThresholdSeconds ?? 45);
+      setLocalInterval(scanData.data.autoScanIntervalSeconds ?? 300);
+    }
+  }, [scanData]);
+
+  const hasChanges = localStale !== staleThreshold || localInterval !== autoScanInterval;
+
+  function handleSave() {
+    const payload: { endpointStaleThresholdSeconds?: number; autoScanIntervalSeconds?: number } = {};
+    if (localStale !== staleThreshold) payload.endpointStaleThresholdSeconds = localStale;
+    if (localInterval !== autoScanInterval) payload.autoScanIntervalSeconds = localInterval;
+    updateMutation.mutate(payload, {
+      onSuccess: () => {
+        setSaveSuccess(true);
+        setTimeout(() => setSaveSuccess(false), 2000);
+      },
+    });
+  }
+
+  const stalePresets = [
+    { label: '30s', value: 30 },
+    { label: '45s', value: 45 },
+    { label: '60s', value: 60 },
+    { label: '2m', value: 120 },
+    { label: '5m', value: 300 },
+  ];
+
+  const intervalPresets = [
+    { label: 'Off', value: 0 },
+    { label: '1m', value: 60 },
+    { label: '5m', value: 300 },
+    { label: '15m', value: 900 },
+    { label: '30m', value: 1800 },
+  ];
+
+  if (isLoading) {
+    return (
+      <section className="bg-surface-container-low rounded-xl p-6">
+        <div className="flex items-center gap-2 text-on-surface-variant text-sm py-4">
+          <Loader2 className="w-4 h-4 animate-spin" /> Loading scan settings...
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="bg-surface-container-low rounded-xl p-6">
+      <div className="flex items-center gap-3 mb-5">
+        <div className="p-2 bg-primary/10 rounded-lg">
+          <Radar className="w-5 h-5 text-primary" />
+        </div>
+        <div>
+          <h2 className="font-headline font-bold text-on-surface text-lg">Network Scanning</h2>
+          <p className="text-xs text-on-surface-variant">Configure auto-discovery and endpoint cleanup</p>
+        </div>
+      </div>
+
+      <div className="space-y-6">
+        {/* Stale Endpoint Threshold */}
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <div>
+              <p className="text-sm text-on-surface font-medium">Stale Endpoint Timeout</p>
+              <p className="text-xs text-on-surface-variant">
+                Endpoints not seen for this long are automatically removed
+              </p>
+            </div>
+            <span className="text-sm font-bold font-technical text-primary">
+              {localStale < 60 ? `${localStale}s` : localStale < 3600 ? `${Math.round(localStale / 60)}m` : `${(localStale / 3600).toFixed(1)}h`}
+            </span>
+          </div>
+          <input
+            type="range"
+            min={10}
+            max={3600}
+            step={5}
+            value={localStale}
+            onChange={(e) => setLocalStale(Number(e.target.value))}
+            className="w-full h-1.5 bg-surface-container-highest rounded-full appearance-none cursor-pointer accent-primary"
+          />
+          <div className="flex gap-2 mt-2">
+            {stalePresets.map((p) => (
+              <button
+                key={p.value}
+                onClick={() => setLocalStale(p.value)}
+                className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-colors ${
+                  localStale === p.value
+                    ? 'bg-primary/15 text-primary'
+                    : 'bg-surface-container-high text-on-surface-variant hover:bg-surface-container-highest'
+                }`}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Auto-Scan Interval */}
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <div>
+              <p className="text-sm text-on-surface font-medium">Auto-Scan Interval</p>
+              <p className="text-xs text-on-surface-variant">
+                How often agents automatically scan for new endpoints (0 = disabled)
+              </p>
+            </div>
+            <span className="text-sm font-bold font-technical text-primary">
+              {localInterval === 0 ? 'Off' : localInterval < 60 ? `${localInterval}s` : `${Math.round(localInterval / 60)}m`}
+            </span>
+          </div>
+          <input
+            type="range"
+            min={0}
+            max={3600}
+            step={30}
+            value={localInterval}
+            onChange={(e) => setLocalInterval(Number(e.target.value))}
+            className="w-full h-1.5 bg-surface-container-highest rounded-full appearance-none cursor-pointer accent-primary"
+          />
+          <div className="flex gap-2 mt-2">
+            {intervalPresets.map((p) => (
+              <button
+                key={p.value}
+                onClick={() => setLocalInterval(p.value)}
+                className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-colors ${
+                  localInterval === p.value
+                    ? 'bg-primary/15 text-primary'
+                    : 'bg-surface-container-high text-on-surface-variant hover:bg-surface-container-highest'
+                }`}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Save Button */}
+        {hasChanges && (
+          <div className="flex items-center gap-3 pt-2">
+            <button
+              onClick={handleSave}
+              disabled={updateMutation.isPending}
+              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-on-primary text-sm font-bold hover:bg-primary/90 transition-colors disabled:opacity-50"
+            >
+              {updateMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
+              Save Scan Settings
+            </button>
+            <button
+              onClick={() => { setLocalStale(staleThreshold); setLocalInterval(autoScanInterval); }}
+              className="px-4 py-2 rounded-xl text-sm text-on-surface-variant hover:bg-surface-container-high transition-colors"
+            >
+              Reset
+            </button>
+            {saveSuccess && (
+              <span className="text-xs text-tertiary font-bold animate-pulse">Saved!</span>
+            )}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function SessionDefaultsSection() {
+  const { data: prefsData } = usePreferences();
+  const updatePrefsMutation = useUpdatePreferences();
+  const prefs = prefsData?.data ?? {};
+
+  const [sessionDuration, setSessionDuration] = useState<string>('8h');
+  const [customDuration, setCustomDuration] = useState('');
+  const [saveSuccess, setSaveSuccess] = useState(false);
+
+  // Sync from backend
+  useEffect(() => {
+    if (prefs.sessionDurationHours) {
+      setSessionDuration(`${prefs.sessionDurationHours}h`);
+    }
+  }, [prefs.sessionDurationHours]);
+
+  function handleSave() {
+    let hours = 8;
+    if (sessionDuration === 'Custom') {
+      const match = customDuration.match(/^(\d+)\s*h?$/);
+      hours = match ? Number(match[1]) : 8;
+    } else {
+      const match = sessionDuration.match(/^(\d+)h$/);
+      hours = match ? Number(match[1]) : 8;
+    }
+    updatePrefsMutation.mutate(
+      { sessionDurationHours: hours },
+      {
+        onSuccess: () => {
+          setSaveSuccess(true);
+          setTimeout(() => setSaveSuccess(false), 2000);
+        },
+      },
+    );
+  }
+
+  return (
+    <section className="bg-surface-container-low rounded-xl p-6">
+      <div className="flex items-center gap-3 mb-5">
+        <div className="p-2 bg-tertiary/10 rounded-lg">
+          <Clock className="w-5 h-5 text-tertiary" />
+        </div>
+        <h2 className="font-headline font-bold text-on-surface text-lg">Session Defaults</h2>
+      </div>
+
+      <div className="space-y-5">
+        {/* Duration */}
+        <div>
+          <label className="text-sm text-on-surface-variant font-medium mb-2 block">
+            Default Session Duration
+          </label>
+          <p className="text-xs text-on-surface-variant/60 mb-3">
+            When opening a session (browser or export), it will automatically expire after this duration.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {SESSION_DURATION_OPTIONS.map((opt) => (
+              <button
+                key={opt}
+                onClick={() => setSessionDuration(opt)}
+                className={`px-3 py-1.5 rounded-xl text-sm font-medium transition-colors ${
+                  sessionDuration === opt
+                    ? 'bg-tertiary/20 text-tertiary'
+                    : 'bg-surface-container-highest text-on-surface-variant hover:bg-surface-container-high'
+                }`}
+              >
+                {opt}
+              </button>
+            ))}
+          </div>
+          {sessionDuration === 'Custom' && (
+            <input
+              type="text"
+              value={customDuration}
+              onChange={(e) => setCustomDuration(e.target.value)}
+              placeholder="e.g. 6, 12, 48"
+              className="mt-2 bg-surface-container-highest rounded-xl px-4 py-2 text-sm text-on-surface font-body focus:outline-none focus:ring-2 focus:ring-tertiary/40 placeholder:text-outline-variant w-40"
+            />
+          )}
+        </div>
+
+        {/* Max Concurrent — currently unlimited */}
+        <div>
+          <label className="text-sm text-on-surface-variant font-medium mb-1 block">
+            Max Concurrent Sessions
+          </label>
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-on-surface font-technical">Unlimited</span>
+            <span className="text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-tertiary/10 text-tertiary">
+              No limit
+            </span>
+          </div>
+          <p className="text-xs text-on-surface-variant/50 mt-1">
+            Users can open as many sessions as needed across all devices.
+          </p>
+        </div>
+
+        {/* Save */}
+        <div className="flex items-center gap-3 pt-2">
+          <button
+            onClick={handleSave}
+            disabled={updatePrefsMutation.isPending}
+            className="bg-gradient-to-br from-primary to-primary-container text-on-primary font-bold px-6 py-2 rounded-xl hover:shadow-[0_0_16px_rgba(173,198,255,0.3)] transition-all active:scale-95 text-sm disabled:opacity-50"
+          >
+            {updatePrefsMutation.isPending ? 'Saving...' : 'Save Duration'}
+          </button>
+          {saveSuccess && (
+            <span className="text-xs text-tertiary font-technical">Saved!</span>
+          )}
+          {updatePrefsMutation.isError && (
+            <span className="text-xs text-error font-technical">
+              {(updatePrefsMutation.error as Error)?.message ?? 'Failed'}
+            </span>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function DevicesSettingsTab() {
   const { data: devicesData, isLoading } = useDevices({ limit: 100 });
   const { data: orgsData } = useOrganizations();
@@ -1532,6 +1914,15 @@ function DevicesSettingsTab() {
 
   return (
     <div className="space-y-6 max-w-4xl">
+      {/* Device Registration & Approval */}
+      <DeviceRegistrationSection />
+
+      {/* Network Scan Settings */}
+      <ScanSettingsSection />
+
+      {/* Session Defaults */}
+      <SessionDefaultsSection />
+
       {/* Notifications — BETA */}
       <section className="bg-surface-container-low rounded-xl p-6">
         <div className="flex items-center gap-3 mb-5">

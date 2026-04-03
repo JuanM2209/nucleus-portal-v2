@@ -96,6 +96,10 @@ pub enum ServerToAgent {
         payload: Option<TcpStreamPayload>,
     },
 
+    // Force sync: agent should send heartbeat + discovery immediately
+    #[serde(rename = "force_sync")]
+    ForceSync,
+
     // Rathole port management (V2 transport)
     #[serde(rename = "port_expose")]
     PortExpose {

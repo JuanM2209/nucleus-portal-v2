@@ -6,8 +6,8 @@
 #   curl -fsSL https://raw.githubusercontent.com/JuanM2209/nucleus-portal-v2/master/scripts/install-agent-v2.sh | bash
 set -e
 
-IMAGE="nucleus-agent:v2"
-TAR_URL="https://github.com/JuanM2209/nucleus-agent-releases/releases/download/v2.0.0/nucleus-agent-v2.tar.gz"
+IMAGE="nucleus-agent:vr25"
+TAR_URL="https://github.com/JuanM2209/nucleus-agent-releases/releases/download/v2.5.0/nucleus-agent-vr25.tar.gz"
 CONTAINER="remote-s"
 SERVER="${AGENT_SERVER_URL:-wss://api.datadesng.com/ws/agent}"
 DEVICE="${AGENT_TOKEN:-$(cat /data/nucleus/factory/nucleus_serial_number 2>/dev/null)}"

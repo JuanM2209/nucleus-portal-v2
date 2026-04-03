@@ -51,6 +51,73 @@ export class DevicesController implements OnModuleDestroy {
     return paginatedResponse(data, total, query.page, query.limit);
   }
 
+  // ── Pending Devices (must be before :id route) ──
+
+  @Get('pending')
+  async listPending(@CurrentUser('tenantId') tenantId: string) {
+    const pending = await this.devicesService.listPendingDevices(tenantId);
+    return successResponse(pending);
+  }
+
+  @Post('pending/:id/approve')
+  async approvePending(
+    @CurrentUser() user: any,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    const device = await this.devicesService.approveDevice(user.tenantId, id, user.id);
+    return successResponse(device);
+  }
+
+  @Post('pending/:id/deny')
+  async denyPending(
+    @CurrentUser() user: any,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    const result = await this.devicesService.denyDevice(user.tenantId, id, user.id);
+    return successResponse(result);
+  }
+
+  @Get('approval-policy')
+  async getApprovalPolicy(@CurrentUser('tenantId') tenantId: string) {
+    const policy = await this.devicesService.getApprovalPolicy(tenantId);
+    return successResponse({ policy });
+  }
+
+  @Patch('approval-policy')
+  async setApprovalPolicy(
+    @CurrentUser('tenantId') tenantId: string,
+    @Body() body: { policy: string },
+  ) {
+    const result = await this.devicesService.setApprovalPolicy(tenantId, body.policy);
+    return successResponse(result);
+  }
+
+  @Get('scan-settings')
+  async getScanSettings(@CurrentUser('tenantId') tenantId: string) {
+    const [staleThreshold, autoScanInterval] = await Promise.all([
+      this.devicesService.getStaleThreshold(tenantId),
+      this.devicesService.getAutoScanInterval(tenantId),
+    ]);
+    return successResponse({ endpointStaleThresholdSeconds: staleThreshold, autoScanIntervalSeconds: autoScanInterval });
+  }
+
+  @Patch('scan-settings')
+  async setScanSettings(
+    @CurrentUser('tenantId') tenantId: string,
+    @Body() body: { endpointStaleThresholdSeconds?: number; autoScanIntervalSeconds?: number },
+  ) {
+    const results: Record<string, any> = {};
+    if (body.endpointStaleThresholdSeconds !== undefined) {
+      const r = await this.devicesService.setStaleThreshold(tenantId, body.endpointStaleThresholdSeconds);
+      Object.assign(results, r);
+    }
+    if (body.autoScanIntervalSeconds !== undefined) {
+      const r = await this.devicesService.setAutoScanInterval(tenantId, body.autoScanIntervalSeconds);
+      Object.assign(results, r);
+    }
+    return successResponse(results);
+  }
+
   @Get(':id')
   async get(
     @CurrentUser('tenantId') tenantId: string,
@@ -262,11 +329,12 @@ export class DevicesController implements OnModuleDestroy {
 
   @Post(':id/ports/:port/expose')
   async exposePort(
-    @CurrentUser('tenantId') tenantId: string,
+    @CurrentUser() user: any,
     @Param('id', ParseUUIDPipe) id: string,
     @Param('port', ParseIntPipe) port: number,
     @Body() body: { targetIp?: string },
   ) {
+    const tenantId = user.tenantId;
     const device = await this.devicesService.findById(tenantId, id);
     if (!device) return errorResponse('Device not found');
 
@@ -275,8 +343,8 @@ export class DevicesController implements OnModuleDestroy {
       return errorResponse('Agent is offline');
     }
 
-    // Allocate remote port
-    const allocation = await this.portAllocation.allocatePort(id, port);
+    // Allocate remote port (track which user initiated it)
+    const allocation = await this.portAllocation.allocatePort(id, port, user.id);
 
     // Add to rathole server config (hot-reload)
     this.chiselConfig.addService(allocation.serviceName, allocation.remotePort);
@@ -290,7 +358,7 @@ export class DevicesController implements OnModuleDestroy {
       remote_port: allocation.remotePort,
     }));
 
-    const host = process.env.CHISEL_PUBLIC_HOST ?? process.env.PORTAL_URL?.replace('https://', '').replace('http://', '') ?? 'api.datadesng.com';
+    const host = process.env.CHISEL_PUBLIC_HOST ?? 'localhost';
 
     this.logger.log(`Port exposed: device=${id} port=${port} → ${host}:${allocation.remotePort}`);
     return successResponse({

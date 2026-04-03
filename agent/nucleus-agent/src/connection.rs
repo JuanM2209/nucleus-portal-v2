@@ -81,6 +81,27 @@ async fn connect_and_run(config: &AgentConfig) -> Result<(), Box<dyn std::error:
     // Writer task: drains the channel and sends messages through the WS
     let writer_handle = tokio::spawn(ws_writer_task(ws_write, rx));
 
+    // Auto-discovery: scan localhost for local services 5s after connecting
+    let auto_scan_tx = tx.clone();
+    let auto_scan_interval = config.discovery.passive_interval_secs;
+    tokio::spawn(async move {
+        // Initial delay — let the connection stabilize first
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        info!("Auto-discovery: scanning localhost for local services...");
+        crate::scanner::run_localhost_scan(auto_scan_tx.clone(), "auto".to_string());
+
+        // Periodic re-scan if passive_interval_secs > 0
+        if auto_scan_interval > 0 {
+            let mut interval = tokio::time::interval(Duration::from_secs(auto_scan_interval));
+            interval.tick().await; // Skip the first tick (already scanned above)
+            loop {
+                interval.tick().await;
+                info!("Periodic auto-scan: scanning localhost...");
+                crate::scanner::run_localhost_scan(auto_scan_tx.clone(), "auto".to_string());
+            }
+        }
+    });
+
     // WebSocket ping task: sends ping frames every 20s to keep Cloudflare tunnel alive
     let ping_tx = tx.clone();
     let ping_handle = tokio::spawn(async move {
@@ -265,16 +286,25 @@ async fn handle_text_message(
         Ok(ServerToAgent::NetworkScan { payload }) => {
             let p = payload.unwrap_or_default();
             let adapter_name = p.adapter_name.clone().unwrap_or_else(|| "eth0".to_string());
-            // Get adapter IP and subnet from current system state
-            let adapters = crate::health::collect_adapters_pub();
-            if let Some(adapter) = adapters.iter().find(|a| a.name == adapter_name) {
-                if let (Some(ip), Some(mask)) = (&adapter.ip_address, &adapter.subnet_mask) {
-                    crate::scanner::run_scan(tx.clone(), adapter_name, ip.clone(), mask.clone(), p);
-                } else {
-                    warn!("Adapter {} has no IP/subnet for scanning", adapter_name);
-                }
+
+            // Special case: localhost-only scan (no adapter IP needed)
+            if adapter_name == "localhost" || adapter_name == "auto" {
+                crate::scanner::run_localhost_scan(tx.clone(), adapter_name);
             } else {
-                warn!("Adapter {} not found", adapter_name);
+                // Get adapter IP and subnet from current system state
+                let adapters = crate::health::collect_adapters_pub();
+                if let Some(adapter) = adapters.iter().find(|a| a.name == adapter_name) {
+                    if let (Some(ip), Some(mask)) = (&adapter.ip_address, &adapter.subnet_mask) {
+                        crate::scanner::run_scan(tx.clone(), adapter_name, ip.clone(), mask.clone(), p);
+                    } else {
+                        // Adapter has no IP — still scan localhost for local services
+                        info!("Adapter {} has no IP — falling back to localhost scan", adapter_name);
+                        crate::scanner::run_localhost_scan(tx.clone(), adapter_name);
+                    }
+                } else {
+                    warn!("Adapter {} not found — falling back to localhost scan", adapter_name);
+                    crate::scanner::run_localhost_scan(tx.clone(), adapter_name);
+                }
             }
         }
         // mbusd process control
@@ -286,6 +316,15 @@ async fn handle_text_message(
         }
         Ok(ServerToAgent::MbusdStatusReq) => {
             mbusd_mgr.status();
+        }
+        // Force sync: send heartbeat + discovery immediately
+        Ok(ServerToAgent::ForceSync) => {
+            info!("Force sync requested — sending heartbeat + running localhost scan");
+            let heartbeat = crate::health::collect_heartbeat();
+            if let Ok(json) = serde_json::to_string(&heartbeat) {
+                let _ = tx.send(Message::Text(json));
+            }
+            crate::scanner::run_localhost_scan(tx.clone(), "auto".to_string());
         }
         // Chisel V2 transport
         Ok(ServerToAgent::PortExpose { service_name, local_addr, remote_port }) => {

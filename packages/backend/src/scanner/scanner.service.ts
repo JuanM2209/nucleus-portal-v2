@@ -512,22 +512,16 @@ export class ScannerService {
       }
     }
 
-    if (!matchedJob) {
-      this.logger.warn(`No matching scan job for agent result from ${deviceId}`);
-      return;
-    }
-
     if (isError) {
-      const error = payload.error || msg.error || 'Agent scan failed';
-      const updated: ScanJob = { ...matchedJob, status: 'failed', error, completedAt: new Date() };
-      this.scanJobs.set(matchedJob.id, updated);
+      if (matchedJob) {
+        const error = payload.error || msg.error || 'Agent scan failed';
+        const updated: ScanJob = { ...matchedJob, status: 'failed', error, completedAt: new Date() };
+        this.scanJobs.set(matchedJob.id, updated);
+      }
       return;
     }
 
-    // Convert agent results to ScanResult format and persist
-    const adapterData = (matchedJob as any).__adapterData;
-    if (!adapterData) return;
-
+    // Convert agent results to ScanResult format
     const results: ScanResult[] = hosts.map((host: any) => ({
       ip: host.ip,
       hostname: null,
@@ -545,27 +539,113 @@ export class ScannerService {
       reachability: 'requires-agent',
     }));
 
-    // Persist to DB
+    // Persist to DB — either via scan job or directly for auto-scans
     try {
-      await this.persistResults(matchedJob.tenantId, matchedJob.deviceId, matchedJob.adapterId, results);
+      if (matchedJob) {
+        const adapterData = (matchedJob as any).__adapterData;
+        if (adapterData) {
+          await this.persistResults(matchedJob.tenantId, matchedJob.deviceId, matchedJob.adapterId, results);
+        }
+      } else {
+        // Auto-scan (no formal scan job) — resolve tenantId + adapterId from DB
+        await this.persistAutoScanResults(deviceId, adapterName, results);
+      }
     } catch (e) {
       this.logger.error(`Failed to persist agent scan results: ${e}`);
     }
 
-    // Update job status
+    // Update job status if there was a matching job
+    if (matchedJob) {
+      const totalPorts = results.reduce((sum: number, r: ScanResult) => sum + r.ports.filter((p: any) => p.isOpen).length, 0);
+      const updated: ScanJob = {
+        ...matchedJob,
+        status: 'completed',
+        completedAt: new Date(),
+        hostsScanned: hosts.length,
+        hostsFound: results.length,
+        portsFound: totalPorts,
+        results,
+        progress: 100,
+      };
+      this.scanJobs.set(matchedJob.id, updated);
+    }
+
     const totalPorts = results.reduce((sum: number, r: ScanResult) => sum + r.ports.filter((p: any) => p.isOpen).length, 0);
-    const updated: ScanJob = {
-      ...matchedJob,
-      status: 'completed',
-      completedAt: new Date(),
-      hostsScanned: hosts.length,
-      hostsFound: results.length,
-      portsFound: totalPorts,
-      results,
-      progress: 100,
-    };
-    this.scanJobs.set(matchedJob.id, updated);
-    this.logger.log(`Agent scan completed: ${results.length} hosts, ${totalPorts} ports`);
+    this.logger.log(`Agent scan completed for ${deviceId}: ${results.length} hosts, ${totalPorts} ports`);
+  }
+
+  /**
+   * Persist auto-scan results (no formal scan job).
+   * Resolves tenantId and finds/creates an adapter for the device.
+   */
+  private async persistAutoScanResults(
+    deviceId: string,
+    adapterName: string,
+    results: ScanResult[],
+  ): Promise<void> {
+    // Get device's tenantId
+    const [device] = await this.db
+      .select({ tenantId: devices.tenantId })
+      .from(devices)
+      .where(eq(devices.id, deviceId))
+      .limit(1);
+
+    if (!device) {
+      this.logger.warn(`Auto-scan: device ${deviceId} not found in DB`);
+      return;
+    }
+
+    // Find or create the adapter (use adapterName or 'auto' as fallback)
+    const effectiveName = adapterName || 'auto';
+    let [adapter] = await this.db
+      .select()
+      .from(deviceAdapters)
+      .where(and(
+        eq(deviceAdapters.deviceId, deviceId),
+        eq(deviceAdapters.name, effectiveName),
+      ))
+      .limit(1);
+
+    if (!adapter) {
+      // Create the adapter entry
+      [adapter] = await this.db
+        .insert(deviceAdapters)
+        .values({
+          deviceId,
+          name: effectiveName,
+          interfaceType: effectiveName === 'auto' ? 'virtual' : 'ethernet',
+          isUp: true,
+          lastSeenAt: new Date(),
+        })
+        .onConflictDoNothing()
+        .returning();
+
+      // If conflict, re-fetch
+      if (!adapter) {
+        [adapter] = await this.db
+          .select()
+          .from(deviceAdapters)
+          .where(and(
+            eq(deviceAdapters.deviceId, deviceId),
+            eq(deviceAdapters.name, effectiveName),
+          ))
+          .limit(1);
+      }
+    }
+
+    if (!adapter) {
+      this.logger.warn(`Auto-scan: could not find/create adapter for ${deviceId}/${effectiveName}`);
+      return;
+    }
+
+    // Update adapter lastSeenAt
+    await this.db
+      .update(deviceAdapters)
+      .set({ isUp: true, lastSeenAt: new Date() })
+      .where(eq(deviceAdapters.id, adapter.id));
+
+    this.logger.log(`Auto-scan: persisting ${results.length} hosts for ${deviceId}/${effectiveName} (adapter=${adapter.id})`);
+    await this.persistResults(device.tenantId, deviceId, adapter.id, results);
   }
 
   private classifyServiceType(port: number): string {
