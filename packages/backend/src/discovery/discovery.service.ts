@@ -152,4 +152,63 @@ export class DiscoveryService {
     const settings = (tenant?.settings ?? {}) as Record<string, any>;
     return settings.endpointStaleThresholdSeconds ?? 45;
   }
+
+  /**
+   * Update the label (friendly name) for an endpoint.
+   * When a label is set, it applies to ALL endpoints with the same IP address
+   * on the same device (so naming one port names all ports for that IP).
+   */
+  async updateEndpointLabel(
+    tenantId: string,
+    deviceId: string,
+    endpointId: string,
+    label: string,
+  ): Promise<void> {
+    // Verify device belongs to tenant
+    const [device] = await this.db
+      .select({ id: devices.id })
+      .from(devices)
+      .where(and(eq(devices.id, deviceId), eq(devices.tenantId, tenantId)))
+      .limit(1);
+
+    if (!device) {
+      throw new Error('Device not found or access denied');
+    }
+
+    // Get the endpoint to find its IP
+    const [endpoint] = await this.db
+      .select({ id: discoveredEndpoints.id, ipAddress: discoveredEndpoints.ipAddress, metadata: discoveredEndpoints.metadata })
+      .from(discoveredEndpoints)
+      .where(and(eq(discoveredEndpoints.id, endpointId), eq(discoveredEndpoints.deviceId, deviceId)))
+      .limit(1);
+
+    if (!endpoint) {
+      throw new Error('Endpoint not found');
+    }
+
+    // Update ALL endpoints with the same IP on this device (propagate label by IP)
+    const allSameIp = await this.db
+      .select({ id: discoveredEndpoints.id, metadata: discoveredEndpoints.metadata })
+      .from(discoveredEndpoints)
+      .where(
+        and(
+          eq(discoveredEndpoints.deviceId, deviceId),
+          eq(discoveredEndpoints.ipAddress, endpoint.ipAddress),
+        ),
+      );
+
+    for (const ep of allSameIp) {
+      const currentMeta = (ep.metadata ?? {}) as Record<string, unknown>;
+      const updatedMeta = { ...currentMeta, label: label || undefined };
+      // Remove label key if empty string
+      if (!label) delete updatedMeta.label;
+
+      await this.db
+        .update(discoveredEndpoints)
+        .set({ metadata: updatedMeta })
+        .where(eq(discoveredEndpoints.id, ep.id));
+    }
+
+    this.logger.log(`Updated label "${label}" for IP ${endpoint.ipAddress} on device ${deviceId} (${allSameIp.length} endpoints)`);
+  }
 }

@@ -143,10 +143,10 @@ NEXT_PUBLIC_TUNNEL_DOMAIN=tunnel.datadesng.com
 - `/login`               Authentication (particle globe)
 - `/dashboard`           Stat cards (devices, orgs, sessions, logs) + charts
 - `/devices`             Device list with org chips, agent version, search
-- `/devices/[deviceId]`  Device detail + health panel + adapter scan + port cards + BETA badge
+- `/devices/[deviceId]`  Device detail + health panel + adapter scan + port cards + device name labels + sort/filter + BETA badge
 - `/sessions`            Active tunnel sessions
 - `/audit`               Audit logs with security events
-- `/logs`                Activity logs with org/target columns + expandable details + export (CSV/Excel/JSON/PDF)
+- `/logs`                Activity logs with org/target columns + expandable details + export (CSV/Excel/JSON/PDF) + email fallback for user display
 - `/admin`               Admin engineering panel
 - `/health`              Health monitoring dashboard
 - `/settings`            Tabs: General, Devices, Organizations, Users, Roles

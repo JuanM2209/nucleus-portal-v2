@@ -40,6 +40,7 @@ import {
   Zap,
   CircleDot,
   MonitorDown,
+  ArrowUpDown,
 } from 'lucide-react';
 import Link from 'next/link';
 import { useDevice, useDeviceAdapters, useDeviceEndpoints, useSyncDevice, useDeviceMetrics, useEndpointHealthCheck } from '@/hooks/use-device';
@@ -90,6 +91,7 @@ interface Endpoint {
   lastSeenAt: string;
   services: ServiceInfo[];
   latency?: number;
+  metadata?: Record<string, unknown> | null;
 }
 
 /* ─── Helpers ─── */
@@ -164,6 +166,31 @@ export default function DeviceDetailPage() {
   const [healthCheckInterval, setHealthCheckInterval] = useState(0); // minutes, 0=off — persists across tab switches
   const HIDDEN_PORTS = useMemo(() => new Set(hiddenPorts), [hiddenPorts]);
 
+  // Label editing state
+  const [editingLabel, setEditingLabel] = useState<string | null>(null);
+  const [labelValue, setLabelValue] = useState('');
+  const queryClient = useQueryClient();
+
+  const startEditingLabel = useCallback((endpointId: string, currentLabel: string) => {
+    setEditingLabel(endpointId);
+    setLabelValue(currentLabel);
+  }, []);
+
+  const cancelEditingLabel = useCallback(() => {
+    setEditingLabel(null);
+    setLabelValue('');
+  }, []);
+
+  const saveEndpointLabel = useCallback(async (endpointId: string) => {
+    try {
+      await api.patch(`/devices/${deviceId}/endpoints/${endpointId}/label`, { label: labelValue.trim() });
+      queryClient.invalidateQueries({ queryKey: ['device-endpoints', deviceId] });
+      setEditingLabel(null);
+    } catch {
+      // silently fail
+    }
+  }, [deviceId, labelValue, queryClient]);
+
   const device = deviceData?.data;
   // Filter out non-physical/virtual adapters that aren't useful for device networking
   const allAdapters: Adapter[] = adaptersData?.data ?? [];
@@ -177,6 +204,53 @@ export default function DeviceDetailPage() {
   });
   const endpoints: Endpoint[] = endpointsData?.data ?? [];
 
+  // Sort options for port cards — hooks MUST be declared before any early return
+  type SortOption = 'default' | 'name' | 'port' | 'ip' | 'latency' | 'interface';
+  const [sortBy, setSortBy] = useState<SortOption>('default');
+  const [sortMenuOpen, setSortMenuOpen] = useState(false);
+
+  // Gather all services with endpoint context
+  const allPortRows = buildPortRows(endpoints, adapters);
+
+  // Apply user's hidden ports filter
+  // Show all endpoints — active status is reflected via sparkline color and status badge
+  const visiblePortRows = allPortRows
+    .filter((r) => !hideSystemPorts || !HIDDEN_PORTS.has(r.service.port));
+
+  // Sort function for port rows — must be before early returns
+  const sortPortRows = useCallback((rows: typeof visiblePortRows) => {
+    const sorted = [...rows];
+    switch (sortBy) {
+      case 'name': {
+        return sorted.sort((a, b) => {
+          const labelA = ((a.endpointMetadata as Record<string, unknown>)?.label as string) ?? '';
+          const labelB = ((b.endpointMetadata as Record<string, unknown>)?.label as string) ?? '';
+          if (labelA && !labelB) return -1;
+          if (!labelA && labelB) return 1;
+          return labelA.localeCompare(labelB) || a.service.port - b.service.port;
+        });
+      }
+      case 'port':
+        return sorted.sort((a, b) => a.service.port - b.service.port);
+      case 'ip':
+        return sorted.sort((a, b) => {
+          const ipA = a.targetIp.split('.').map(Number);
+          const ipB = b.targetIp.split('.').map(Number);
+          for (let i = 0; i < 4; i++) {
+            if ((ipA[i] ?? 0) !== (ipB[i] ?? 0)) return (ipA[i] ?? 0) - (ipB[i] ?? 0);
+          }
+          return a.service.port - b.service.port;
+        });
+      case 'latency':
+        return sorted.sort((a, b) => (a.latency ?? 9999) - (b.latency ?? 9999));
+      case 'interface':
+        return sorted.sort((a, b) => a.interfaceName.localeCompare(b.interfaceName) || a.service.port - b.service.port);
+      default:
+        return sorted;
+    }
+  }, [sortBy]);
+
+  // Early returns AFTER all hooks — required by React rules of hooks
   if (deviceLoading) {
     return <LoadingPlaceholder text="Loading device..." />;
   }
@@ -192,16 +266,8 @@ export default function DeviceDetailPage() {
     );
   }
 
-  // Gather all services with endpoint context
-  const allPortRows = buildPortRows(endpoints, adapters);
-
-  // Apply user's hidden ports filter
-  // Show all endpoints — active status is reflected via sparkline color and status badge
-  const visiblePortRows = allPortRows
-    .filter((r) => !hideSystemPorts || !HIDDEN_PORTS.has(r.service.port));
-
-  const webPorts = visiblePortRows.filter((r) => isWebPort(r.service));
-  const programPorts = visiblePortRows.filter((r) => !isWebPort(r.service));
+  const webPorts = sortPortRows(visiblePortRows.filter((r) => isWebPort(r.service)));
+  const programPorts = sortPortRows(visiblePortRows.filter((r) => !isWebPort(r.service)));
 
   const metadata = device.metadata ?? {};
 
@@ -269,6 +335,50 @@ export default function DeviceDetailPage() {
             {/* Tags hidden — shown in metadata panel instead */}
           </div>
           <div className="flex items-center gap-3">
+            {/* Sort dropdown */}
+            <div className="relative">
+              <button
+                onClick={() => setSortMenuOpen(!sortMenuOpen)}
+                className={`flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-medium transition-all border ${
+                  sortBy !== 'default'
+                    ? 'bg-primary/10 text-primary border-primary/20'
+                    : 'bg-surface-container-low text-on-surface-variant border-outline-variant/10 hover:border-outline-variant/30'
+                }`}
+              >
+                <ArrowUpDown className="w-4 h-4" />
+                <span className="hidden sm:inline">
+                  {sortBy === 'default' ? 'Sort' : sortBy === 'name' ? 'Name' : sortBy === 'port' ? 'Port' : sortBy === 'ip' ? 'IP' : sortBy === 'latency' ? 'Latency' : 'Interface'}
+                </span>
+                <ChevronDown className="w-3.5 h-3.5" />
+              </button>
+              {sortMenuOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setSortMenuOpen(false)} />
+                  <div className="absolute right-0 top-full mt-1 z-50 bg-surface-container-high border border-outline-variant/15 rounded-xl shadow-xl py-1 min-w-[160px]">
+                    {([
+                      ['default', 'Default'],
+                      ['name', 'Device Name'],
+                      ['port', 'Port Number'],
+                      ['ip', 'IP Address'],
+                      ['latency', 'Latency'],
+                      ['interface', 'Interface'],
+                    ] as const).map(([value, label]) => (
+                      <button
+                        key={value}
+                        onClick={() => { setSortBy(value); setSortMenuOpen(false); }}
+                        className={`w-full text-left px-4 py-2 text-sm transition-colors ${
+                          sortBy === value
+                            ? 'text-primary font-bold bg-primary/5'
+                            : 'text-on-surface-variant hover:bg-surface-container-highest/60 hover:text-on-surface'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
             <ExportDropdown device={device} adapters={adapters} endpoints={endpoints} />
             <SyncButton deviceId={deviceId} />
           </div>
@@ -296,6 +406,14 @@ export default function DeviceDetailPage() {
                     isLocalhost={row.isLocalhost}
                     latency={row.latency}
                     endpointActive={row.endpointActive}
+                    endpointId={row.endpointId}
+                    endpointLabel={(row.endpointMetadata as Record<string, unknown>)?.label as string ?? ''}
+                    editingLabel={editingLabel}
+                    labelValue={labelValue}
+                    onStartEdit={startEditingLabel}
+                    onCancelEdit={cancelEditingLabel}
+                    onLabelChange={setLabelValue}
+                    onSaveLabel={saveEndpointLabel}
                   />
                 ))}
               </div>
@@ -331,6 +449,14 @@ export default function DeviceDetailPage() {
                     addressMode={row.addressMode}
                     isLocalhost={row.isLocalhost}
                     endpointActive={row.endpointActive}
+                    endpointId={row.endpointId}
+                    endpointLabel={(row.endpointMetadata as Record<string, unknown>)?.label as string ?? ''}
+                    editingLabel={editingLabel}
+                    labelValue={labelValue}
+                    onStartEdit={startEditingLabel}
+                    onCancelEdit={cancelEditingLabel}
+                    onLabelChange={setLabelValue}
+                    onSaveLabel={saveEndpointLabel}
                   />
                 ))
               ) : !bridgeActive ? (
@@ -445,6 +571,10 @@ interface PortRow {
   adapterIp: string | null;
   /** Whether the endpoint is reachable (from health check / lastSeenAt) */
   endpointActive: boolean;
+  /** Endpoint ID for label editing */
+  endpointId: string;
+  /** Endpoint metadata (contains label, etc.) */
+  endpointMetadata: Record<string, unknown> | null;
 }
 
 function buildPortRows(endpoints: Endpoint[], adapters: Adapter[]): PortRow[] {
@@ -481,6 +611,8 @@ function buildPortRows(endpoints: Endpoint[], adapters: Adapter[]): PortRow[] {
         isLocalhost: isLocal,
         adapterIp,
         endpointActive: ep.isActive,
+        endpointId: ep.id,
+        endpointMetadata: ep.metadata ?? null,
       });
     }
   }
@@ -536,10 +668,16 @@ function deriveAddressMode(mode: string | null, adapterName?: string, ip?: strin
 
 function WebPortRow({
   service, targetIp, hostname, deviceId, interfaceName, addressMode, isLocalhost, latency, endpointActive,
+  endpointId, endpointLabel, editingLabel, labelValue, onStartEdit, onCancelEdit, onLabelChange, onSaveLabel,
 }: {
   service: ServiceInfo; targetIp: string; hostname: string | null; deviceId: string;
   interfaceName: string; addressMode: 'DHCP' | 'Static' | 'Not Set';
   isLocalhost: boolean; latency?: number; endpointActive: boolean;
+  endpointId: string; endpointLabel: string;
+  editingLabel: string | null; labelValue: string;
+  onStartEdit: (endpointId: string, currentLabel: string) => void;
+  onCancelEdit: () => void; onLabelChange: (value: string) => void;
+  onSaveLabel: (endpointId: string) => void;
 }) {
   const [loading, setLoading] = useState(false);
   const [exposure, setExposure] = useState<{ id: string; refCount: number; status: string } | null>(null);
@@ -622,23 +760,60 @@ function WebPortRow({
 
   return (
     <div className="relative bg-surface-container-low rounded-xl hover:bg-surface-container transition-all group border border-outline-variant/5 hover:border-primary/15">
+      {/* Pencil edit icon — top-left corner of card */}
+      {!isLocalhost && (
+        <button
+          onClick={() => onStartEdit(endpointId, endpointLabel)}
+          className="absolute top-2 left-2 z-10 p-1 rounded-md bg-surface-container-high/80 text-on-surface-variant/40 opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-all"
+          title="Edit device name"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>
+        </button>
+      )}
       {service.port === 9090 && (
         <span className="absolute -top-2 -right-2 z-10 text-[9px] font-bold text-amber-400 bg-amber-400/10 border border-amber-400/20 px-1.5 py-0.5 rounded-md uppercase tracking-wider shadow-sm backdrop-blur-sm">
           Beta
         </span>
       )}
       <div className="px-5 py-4">
-        {/* Top row: Port + Service + Status + Actions */}
-        <div className="flex items-center gap-4 mb-3">
-          <div className="flex items-center gap-3">
-            <div className="bg-primary/10 rounded-xl px-4 py-2 min-w-[56px] text-center">
-              <span className="font-technical text-lg font-bold text-primary leading-none">{service.port}</span>
-            </div>
-            <div>
-              <span className="text-sm font-bold text-on-surface">{serviceLabel(service)}</span>
-              {sub && <span className="text-[11px] text-on-surface-variant/40 ml-2">{sub}</span>}
-            </div>
+        {/* Inline label editing */}
+        {editingLabel === endpointId && (
+          <div className="flex items-center gap-1.5 mb-3">
+            <input
+              type="text"
+              value={labelValue}
+              onChange={(e) => onLabelChange(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') onSaveLabel(endpointId);
+                if (e.key === 'Escape') onCancelEdit();
+              }}
+              placeholder="Device name..."
+              autoFocus
+              className="bg-surface-container-highest/60 border border-primary/30 rounded-lg px-2.5 py-1 text-sm text-on-surface font-medium w-44 focus:outline-none focus:border-primary/60 placeholder:text-on-surface-variant/30"
+            />
+            <button onClick={() => onSaveLabel(endpointId)} className="p-1 rounded-md bg-primary/10 text-primary hover:bg-primary/20 transition">
+              <Check className="w-3.5 h-3.5" />
+            </button>
+            <button onClick={onCancelEdit} className="p-1 rounded-md bg-surface-container-highest/60 text-on-surface-variant/40 hover:text-on-surface-variant transition">
+              <X className="w-3.5 h-3.5" />
+            </button>
           </div>
+        )}
+        {/* Top row: Port | Service | Label — fixed-width columns for vertical alignment */}
+        <div className="flex items-center gap-3 mb-3">
+          <div className="bg-primary/10 rounded-xl px-4 py-2 w-[64px] text-center shrink-0">
+            <span className="font-technical text-lg font-bold text-primary leading-none">{service.port}</span>
+          </div>
+          <div className="w-[160px] shrink-0 flex items-baseline gap-1.5">
+            <span className="text-sm font-bold text-on-surface">{serviceLabel(service)}</span>
+            {sub && <span className="text-[11px] text-on-surface-variant/40">{sub}</span>}
+          </div>
+          {endpointLabel && editingLabel !== endpointId && (
+            <div className="flex items-center gap-2 shrink-0">
+              <span className="text-on-surface-variant/20">·</span>
+              <span className="text-sm font-bold text-tertiary">{endpointLabel}</span>
+            </div>
+          )}
 
           <div className="flex-1" />
 
@@ -747,6 +922,14 @@ function ProgramPortRow({
   addressMode,
   isLocalhost,
   endpointActive,
+  endpointId,
+  endpointLabel,
+  editingLabel,
+  labelValue,
+  onStartEdit,
+  onCancelEdit,
+  onLabelChange,
+  onSaveLabel,
 }: {
   service: ServiceInfo;
   targetIp: string;
@@ -757,12 +940,20 @@ function ProgramPortRow({
   addressMode: 'DHCP' | 'Static' | 'Not Set';
   isLocalhost: boolean;
   endpointActive: boolean;
+  endpointId: string;
+  endpointLabel: string;
+  editingLabel: string | null;
+  labelValue: string;
+  onStartEdit: (endpointId: string, currentLabel: string) => void;
+  onCancelEdit: () => void;
+  onLabelChange: (value: string) => void;
+  onSaveLabel: (endpointId: string) => void;
 }) {
   const [loading, setLoading] = useState(false);
 
   const [exportModal, setExportModal] = useState<{ isOpen: boolean; sessionToken: string; wsUrl: string; targetPort: number }>({ isOpen: false, sessionToken: '', wsUrl: '', targetPort: 0 });
   const handleExport = useCallback(() => {
-    setExportModal({ isOpen: true, targetPort: service.port });
+    setExportModal(prev => ({ ...prev, isOpen: true, targetPort: service.port }));
   }, [service.port]);
 
   // Latency sparkline data — deterministic based on port + latency (no random)
@@ -810,24 +1001,60 @@ function ProgramPortRow({
   const displayIp = isLocalhost ? 'Localhost' : targetIp;
 
   return (
-    <div className="bg-surface-container-low rounded-xl hover:bg-surface-container transition-all group border border-outline-variant/5 hover:border-outline-variant/15">
+    <div className="relative bg-surface-container-low rounded-xl hover:bg-surface-container transition-all group border border-outline-variant/5 hover:border-outline-variant/15">
+      {/* Pencil edit icon — top-left corner of card */}
+      {!isLocalhost && (
+        <button
+          onClick={() => onStartEdit(endpointId, endpointLabel)}
+          className="absolute top-2 left-2 z-10 p-1 rounded-md bg-surface-container-high/80 text-on-surface-variant/40 opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-all"
+          title="Edit device name"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>
+        </button>
+      )}
       <div className="px-5 py-4">
-        {/* Top row: Port + Status + Actions */}
-        <div className="flex items-center gap-4 mb-3">
-          {/* Port badge */}
-          <div className="flex items-center gap-3">
-            <div className="bg-surface-container-highest/60 rounded-lg px-3 py-1.5 min-w-[52px] text-center">
-              <span className="font-technical text-base font-bold text-on-surface leading-none">{service.port}</span>
-            </div>
-            <div>
-              <span className="text-xs font-bold text-on-surface">{serviceLabel(service)}</span>
-              {service.protocol && (
-                <span className="text-[10px] text-on-surface-variant/40 ml-2 font-technical">
-                  {service.protocol.toUpperCase()}
-                </span>
-              )}
-            </div>
+        {/* Inline label editing */}
+        {editingLabel === endpointId && (
+          <div className="flex items-center gap-1.5 mb-3">
+            <input
+              type="text"
+              value={labelValue}
+              onChange={(e) => onLabelChange(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') onSaveLabel(endpointId);
+                if (e.key === 'Escape') onCancelEdit();
+              }}
+              placeholder="Device name..."
+              autoFocus
+              className="bg-surface-container-highest/60 border border-primary/30 rounded-lg px-2.5 py-1 text-xs text-on-surface font-medium w-40 focus:outline-none focus:border-primary/60 placeholder:text-on-surface-variant/30"
+            />
+            <button onClick={() => onSaveLabel(endpointId)} className="p-1 rounded-md bg-primary/10 text-primary hover:bg-primary/20 transition">
+              <Check className="w-3.5 h-3.5" />
+            </button>
+            <button onClick={onCancelEdit} className="p-1 rounded-md bg-surface-container-highest/60 text-on-surface-variant/40 hover:text-on-surface-variant transition">
+              <X className="w-3.5 h-3.5" />
+            </button>
           </div>
+        )}
+        {/* Top row: Port | Service | Label — fixed-width columns for vertical alignment */}
+        <div className="flex items-center gap-3 mb-3">
+          <div className="bg-surface-container-highest/60 rounded-lg px-3 py-1.5 w-[56px] text-center shrink-0">
+            <span className="font-technical text-base font-bold text-on-surface leading-none">{service.port}</span>
+          </div>
+          <div className="w-[140px] shrink-0 flex items-baseline gap-1.5">
+            <span className="text-xs font-bold text-on-surface">{serviceLabel(service)}</span>
+            {service.protocol && (
+              <span className="text-[10px] text-on-surface-variant/40 font-technical">
+                {service.protocol.toUpperCase()}
+              </span>
+            )}
+          </div>
+          {endpointLabel && editingLabel !== endpointId && (
+            <div className="flex items-center gap-2 shrink-0">
+              <span className="text-on-surface-variant/20">·</span>
+              <span className="text-xs font-bold text-tertiary">{endpointLabel}</span>
+            </div>
+          )}
 
           {/* Spacer */}
           <div className="flex-1" />

@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Param, UseGuards, ParseUUIDPipe, Logger, Inject } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Param, Body, UseGuards, ParseUUIDPipe, Logger, Inject } from '@nestjs/common';
 import { DiscoveryService } from './discovery.service';
 import { EndpointHealthService } from './endpoint-health.service';
 import { AgentRegistryService } from '../agent-gateway/agent-registry.service';
@@ -72,6 +72,25 @@ export class DiscoveryController {
       return successResponse(result);
     } catch (err: any) {
       return errorResponse(err.message || 'Health check failed');
+    }
+  }
+
+  /**
+   * Update the friendly label for an endpoint (and all endpoints with the same IP).
+   * Used to assign device names like "NFBM-883" to discovered network devices.
+   */
+  @Patch('endpoints/:endpointId/label')
+  async updateEndpointLabel(
+    @CurrentUser('tenantId') tenantId: string,
+    @Param('deviceId', ParseUUIDPipe) deviceId: string,
+    @Param('endpointId', ParseUUIDPipe) endpointId: string,
+    @Body() body: { label: string },
+  ) {
+    try {
+      await this.discoveryService.updateEndpointLabel(tenantId, deviceId, endpointId, body.label);
+      return successResponse({ updated: true });
+    } catch (err: any) {
+      return errorResponse(err.message || 'Failed to update label');
     }
   }
 

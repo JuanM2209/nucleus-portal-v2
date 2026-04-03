@@ -293,8 +293,8 @@ function SessionHistoryTab() {
                     {(s.userName ?? s.userEmail ?? '?')[0].toUpperCase()}
                   </div>
                   <div className="min-w-0">
-                    <span className="text-on-surface text-xs font-medium block truncate">{s.userName ?? 'Unknown'}</span>
-                    {s.userEmail && <span className="text-on-surface-variant/50 text-[10px] font-technical block truncate">{s.userEmail}</span>}
+                    <span className="text-on-surface text-xs font-medium block truncate">{s.userName ?? s.userEmail ?? 'System'}</span>
+                    {s.userEmail && s.userName && <span className="text-on-surface-variant/50 text-[10px] font-technical block truncate">{s.userEmail}</span>}
                   </div>
                 </div>
 
@@ -621,9 +621,9 @@ function ActivityLogsTab() {
                       </div>
                       <div className="min-w-0">
                         <span className="text-on-surface text-xs font-medium block truncate">
-                          {log.userName ?? 'System'}
+                          {log.userName ?? log.userEmail ?? 'System'}
                         </span>
-                        {log.userEmail && (
+                        {log.userEmail && log.userName && (
                           <span className="text-on-surface-variant/50 text-[10px] font-technical block truncate">
                             {log.userEmail}
                           </span>
