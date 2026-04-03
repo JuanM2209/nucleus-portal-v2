@@ -209,8 +209,36 @@ NEXT_PUBLIC_TUNNEL_DOMAIN=tunnel.datadesng.com
   - `GET /devices/:id/ports` — list active port allocations for a device
 - **Install script:** `curl -fsSL https://raw.githubusercontent.com/JuanM2209/nucleus-deploy/main/install.sh | bash` (installs agent + chisel client binary)
 
+## ARP Discovery & Two-Phase Scanning (V26-V27)
+
+The agent uses a two-phase approach for subnet device discovery:
+
+**Phase 1 — ARP Sweep (L2, unfirewallable):**
+- Uses `pnet` crate for raw AF_PACKET sockets (requires `--privileged`)
+- Sends ARP who-has requests to all IPs in subnet with 500us inter-packet delay
+- Collects ARP replies for 4 seconds
+- Reports MAC address + ARP latency for each responding host
+- Works even if all TCP ports are firewalled (L2 protocol)
+
+**Phase 2 — TCP Port Scan (only on ARP-discovered hosts):**
+- Scans 22 ports (standard) or 44 ports (deep) including industrial protocols
+- Industrial ports: S7comm (102), Modbus (502), MQTT (1883), OPC UA (4840), BACnet (47808), EtherNet/IP (44818), DNP3 (20000), IEC 104 (2404)
+- Hosts with 0 open TCP ports still reported if found by ARP (with empty ports vec)
+- Fallback: if ARP finds nothing, falls back to TCP-only scan on all IPs
+
+**MAC Vendor OUI Lookup:**
+Top industrial vendors identified by first 3 bytes of MAC address:
+Siemens, Rockwell Automation, Schneider Electric, Moxa, Emerson, ABB, Beckhoff, Phoenix Contact, WAGO, Hikvision, Dahua, Axis, Advantech, Cisco, TP-Link, Raspberry Pi, Honeywell, GE, Mitsubishi Electric, Omron, Yokogawa, Hirschmann/Belden
+
+**Backend Integration:**
+- `agent-gateway.gateway.ts`: Receives scan results, persists to `discovered_endpoints` table
+- Self-IP filtering: Rejects endpoints whose IP matches any device adapter IP
+- Virtual adapter filtering: Skips lo, dummy0, sit0, p2p0, docker0, veth*, br-*
+- Auto re-expose: On agent reconnect, backend resends all active `port_expose` commands
+- Auto subnet scan: Backend triggers deep scan on all adapters after agent connects
+
 ## Rust Agent (agent/ + common crate)
-**Source Files (9 core modules):**
+**Source Files (10 core modules):**
 - `main.rs`         Entry point, arg parsing, config loading
 - `config.rs`       TOML config parsing (server, heartbeat, discovery, tunnel sections)
 - `connection.rs`   WebSocket connection management + auto-reconnect
@@ -220,17 +248,18 @@ NEXT_PUBLIC_TUNNEL_DOMAIN=tunnel.datadesng.com
 - `comms.rs`        Node-RED /comms endpoint relay
 - `mbusd.rs`        Modbus TCP daemon integration
 - `scanner.rs`      Port enumeration + service discovery
+- `arp_discovery.rs` ARP sweep (pnet L2) + MAC OUI vendor lookup for industrial devices
 
 **Common Crate:**
 - `messages.rs`     ServerToAgent / AgentToServer message enums (protocol)
-- `types.rs`        Shared data types (Health, Port, Service, Tunnel, etc.)
+- `types.rs`        Shared data types (Health, Port, Service, Tunnel, etc.) — ScannedHost includes `mac: Option<String>` and `vendor: Option<String>`
 
 **Build & Deployment:**
 - Config: `agent.example.toml` (server, heartbeat, discovery, tunnel sections)
-- Docker image: `nucleus-agent:vr24` (Debian slim + mbusd bundled)
+- Docker image: `nucleus-agent:vr27` (Debian slim + mbusd bundled)
 - Docker flags: `--privileged --pid=host --network host`
 - Cross-compile ARM: `docker buildx build --platform linux/arm/v7 -f infra/docker/Dockerfile.agent`
-- GitHub Release: `JuanM2209/nucleus-agent-releases` v0.24.0
+- GitHub Release: `JuanM2209/nucleus-agent-releases` v0.27.0
 - Install: `curl -fsSL https://raw.githubusercontent.com/JuanM2209/nucleus-deploy/main/install.sh | bash` (agent + chisel client)
 
 **Chisel Transport (TCP over WebSocket):**

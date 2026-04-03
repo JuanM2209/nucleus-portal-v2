@@ -21,6 +21,9 @@ import {
   accessSessions,
   exposures,
   agentHeartbeats,
+  pendingDevices,
+  tenants,
+  portAllocations,
 } from '../database/schema';
 import type {
   AgentToServerMessage,
@@ -34,6 +37,8 @@ const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 export class AgentGateway implements OnGatewayConnection, OnGatewayDisconnect {
   private readonly logger = new Logger(AgentGateway.name);
   private readonly keepAliveIntervals = new Map<any, NodeJS.Timeout>();
+  /** Tracks when each device last had subnet scans triggered (epoch ms) */
+  private readonly lastSubnetScanTime = new Map<string, number>();
 
   @WebSocketServer()
   server!: Server;
@@ -81,8 +86,12 @@ export class AgentGateway implements OnGatewayConnection, OnGatewayDisconnect {
         }
 
         if (!device) {
-          this.logger.warn(`Agent connection rejected: device not found for token "${token}"`);
-          client.close(4003, 'Device not found');
+          // Device not found — check approval policy and possibly auto-register
+          const handled = await this.handleUnknownDevice(client, token);
+          if (!handled) {
+            this.logger.warn(`Agent connection rejected: device not found for token "${token}"`);
+            client.close(4003, 'Device not found — pending approval or denied');
+          }
           return;
         }
 
@@ -97,6 +106,124 @@ export class AgentGateway implements OnGatewayConnection, OnGatewayDisconnect {
     } catch (error) {
       this.logger.error(`Error during agent connection: ${error}`);
       client.close(4500, 'Internal server error');
+    }
+  }
+
+  /**
+   * Handle an agent connection with a token that doesn't match any existing device.
+   * Checks tenant approval policy and either auto-registers or queues for approval.
+   * Returns true if the device was auto-approved and activated.
+   */
+  private async handleUnknownDevice(client: any, token: string): Promise<boolean> {
+    // Extract remote IP from the connection
+    const req = client.upgradeReq || client._req;
+    const remoteIp = req?.headers?.['x-forwarded-for']?.split(',')[0]?.trim()
+      || req?.socket?.remoteAddress
+      || null;
+
+    // Get the default tenant (single-tenant deployment for now)
+    const [tenant] = await this.db
+      .select()
+      .from(tenants)
+      .where(eq(tenants.isActive, true))
+      .limit(1);
+
+    if (!tenant) {
+      this.logger.warn('No active tenant found for auto-registration');
+      return false;
+    }
+
+    const tenantSettings = (tenant.settings ?? {}) as Record<string, any>;
+    const policy = tenantSettings.deviceApprovalPolicy ?? 'manual';
+
+    if (policy === 'deny_all') {
+      this.logger.warn(`Device "${token}" rejected: tenant policy is deny_all`);
+      client.close(4003, 'Device registration denied by policy');
+      return true; // handled — don't send generic close
+    }
+
+    if (policy === 'auto_approve') {
+      // Auto-register the device immediately
+      const device = await this.autoRegisterDevice(tenant.id, token, remoteIp);
+      if (device) {
+        this.logger.log(`Device "${token}" auto-approved and registered as ${device.id}`);
+        await this.activateAgent(client, device);
+        return true;
+      }
+      return false;
+    }
+
+    // policy === 'manual' (default) — queue for approval
+    await this.queuePendingDevice(tenant.id, token, remoteIp);
+    this.logger.log(`Device "${token}" queued for manual approval (tenant: ${tenant.name})`);
+    client.close(4004, 'Device pending approval');
+    return true;
+  }
+
+  /**
+   * Auto-register a new device in the devices table.
+   */
+  private async autoRegisterDevice(tenantId: string, serialNumber: string, ipAddress: string | null) {
+    try {
+      const [device] = await this.db
+        .insert(devices)
+        .values({
+          tenantId,
+          serialNumber,
+          name: `Nucleus ${serialNumber}`,
+          status: 'offline',
+          metadata: {},
+          tags: [],
+        })
+        .onConflictDoNothing()
+        .returning();
+
+      if (!device) {
+        // Conflict — device already exists (race condition), try to fetch it
+        const [existing] = await this.db
+          .select()
+          .from(devices)
+          .where(eq(devices.serialNumber, serialNumber))
+          .limit(1);
+        return existing ?? null;
+      }
+
+      // Also mark in pending_devices as approved (for audit trail)
+      await this.db
+        .insert(pendingDevices)
+        .values({
+          tenantId,
+          serialNumber,
+          ipAddress,
+          status: 'approved',
+          reviewedAt: new Date(),
+        })
+        .onConflictDoNothing()
+        .catch(() => {}); // best-effort
+
+      return device;
+    } catch (err: any) {
+      this.logger.error(`Auto-register device "${serialNumber}" failed: ${err.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Queue an unknown device for manual approval.
+   */
+  private async queuePendingDevice(tenantId: string, serialNumber: string, ipAddress: string | null) {
+    try {
+      await this.db
+        .insert(pendingDevices)
+        .values({
+          tenantId,
+          serialNumber,
+          ipAddress,
+          status: 'pending',
+        })
+        .onConflictDoNothing(); // Don't duplicate if already pending
+    } catch (err: any) {
+      this.logger.error(`Queue pending device "${serialNumber}" failed: ${err.message}`);
     }
   }
 
@@ -138,6 +265,12 @@ export class AgentGateway implements OnGatewayConnection, OnGatewayDisconnect {
       this.logger.warn(`Failed to rebuild sessions for ${deviceId}: ${e}`),
     );
 
+    // Re-expose chisel ports: resend port_expose for all active allocations
+    // Agent loses chisel state on restart, so we must re-send all active ports
+    this.reExposeChiselPorts(deviceId, client).catch(e =>
+      this.logger.warn(`Failed to re-expose chisel ports for ${deviceId}: ${e}`),
+    );
+
     // Remove any pending auth listeners and set up normal message handling
     client.removeAllListeners('message');
     client.on('message', (data: Buffer | string) => {
@@ -146,6 +279,27 @@ export class AgentGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     // Setup ping/pong keepalive (Cloudflare times out idle WS after ~100s)
     this.setupKeepAlive(client, deviceId);
+
+    // Auto-discovery: trigger localhost scan 3s after agent connects
+    // Persisted under 'localhost' — scanner service maps it to a real adapter
+    setTimeout(() => {
+      if (client.readyState === 1) {
+        this.logger.log(`Auto-scan: triggering localhost discovery for ${deviceId}`);
+        try {
+          client.send(JSON.stringify({
+            type: 'network_scan',
+            payload: {
+              adapter_name: 'localhost',
+              scan_type: 'standard',
+              timeout_ms: 1000,
+              concurrency: 20,
+            },
+          }));
+        } catch (e: any) {
+          this.logger.warn(`Auto-scan send failed for ${deviceId}: ${e.message}`);
+        }
+      }
+    }, 3000);
 
     // Log disconnect reason
     client.on('close', (code: number, reason: Buffer) => {
@@ -259,6 +413,45 @@ export class AgentGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     client.on('message', onMessage);
     client.once('close', () => clearTimeout(authTimeout));
+  }
+
+  /**
+   * Re-expose chisel ports for a device that just reconnected.
+   * The agent loses its chisel state on restart, so we resend all active
+   * port_expose commands so chisel client re-establishes the reverse tunnels.
+   */
+  private async reExposeChiselPorts(deviceId: string, agentSocket: any): Promise<void> {
+    const activeAllocations = await this.db
+      .select()
+      .from(portAllocations)
+      .where(
+        and(
+          eq(portAllocations.deviceId, deviceId),
+          eq(portAllocations.status, 'active'),
+        ),
+      );
+
+    if (activeAllocations.length === 0) return;
+
+    this.logger.log(
+      `Re-exposing ${activeAllocations.length} chisel port(s) for reconnected device ${deviceId}`,
+    );
+
+    for (const alloc of activeAllocations) {
+      try {
+        agentSocket.send(JSON.stringify({
+          type: 'port_expose',
+          service_name: alloc.serviceName,
+          local_addr: `127.0.0.1:${alloc.targetPort}`,
+          remote_port: alloc.remotePort,
+        }));
+        this.logger.log(
+          `Re-exposed ${alloc.serviceName}: localhost:${alloc.targetPort} → remote:${alloc.remotePort}`,
+        );
+      } catch (e: any) {
+        this.logger.warn(`Failed to re-expose port ${alloc.targetPort} for ${deviceId}: ${e.message}`);
+      }
+    }
   }
 
   /**
@@ -390,6 +583,7 @@ export class AgentGateway implements OnGatewayConnection, OnGatewayDisconnect {
           this.streamBridge.destroyAllBridgesForDevice(deviceId);
           this.commsRelay.cleanupDevice(deviceId);
           this.registry.unregister(deviceId);
+          this.lastSubnetScanTime.delete(deviceId);
           // Don't mark as offline immediately — give 60s for reconnect
           setTimeout(async () => {
             if (!this.registry.isOnline(deviceId)) {
@@ -642,6 +836,9 @@ export class AgentGateway implements OnGatewayConnection, OnGatewayDisconnect {
     // Upsert device adapters if present
     if (adapters && Array.isArray(adapters) && adapters.length > 0) {
       await this.upsertDeviceAdapters(deviceId, adapters);
+
+      // Trigger subnet scans for adapters with IPs (on first heartbeat + periodically)
+      await this.maybeTrigerSubnetScans(deviceId, adapters);
     }
   }
 
@@ -650,38 +847,152 @@ export class AgentGateway implements OnGatewayConnection, OnGatewayDisconnect {
     adapters: HeartbeatMessage['adapters'],
   ) {
     // Batch upsert using ON CONFLICT (unique index on deviceId + name)
-    for (const adapter of adapters) {
+    // Agent sends snake_case JSON; TS interface expects camelCase — support both
+    // Skip virtual/irrelevant adapters that clutter the UI
+    const SKIP_ADAPTERS = new Set(['lo', 'auto', 'localhost', 'dummy0', 'sit0', 'p2p0', 'docker0', 'br-', 'veth']);
+    for (const raw of adapters) {
+      const adapterName = (raw as any).name ?? '';
+      if (SKIP_ADAPTERS.has(adapterName) || adapterName.startsWith('veth') || adapterName.startsWith('br-')) {
+        continue;
+      }
+      const a = raw as any;
+      const macAddress = a.macAddress ?? a.mac_address ?? null;
+      const ipAddress = a.ipAddress ?? a.ip_address ?? null;
+      const subnetMask = a.subnetMask ?? a.subnet_mask ?? null;
+      const gateway = a.gateway ?? null;
+      const mode = a.mode ?? null;
+      const configProfile = a.configProfile ?? a.config_profile ?? null;
+      const isUp = a.isUp ?? a.is_up ?? false;
+
       try {
         await this.db
           .insert(deviceAdapters)
           .values({
             deviceId,
-            name: adapter.name,
-            macAddress: adapter.macAddress,
-            ipAddress: adapter.ipAddress,
-            subnetMask: adapter.subnetMask,
-            gateway: adapter.gateway,
-            mode: adapter.mode,
-            configProfile: (adapter as any).configProfile || (adapter as any).config_profile || null,
-            isUp: adapter.isUp,
+            name: a.name,
+            macAddress,
+            ipAddress,
+            subnetMask,
+            gateway,
+            mode,
+            configProfile,
+            isUp,
           })
           .onConflictDoUpdate({
             target: [deviceAdapters.deviceId, deviceAdapters.name],
             set: {
-              macAddress: adapter.macAddress,
-              ipAddress: adapter.ipAddress,
-              subnetMask: adapter.subnetMask,
-              gateway: adapter.gateway,
-              mode: adapter.mode,
-              configProfile: (adapter as any).configProfile || (adapter as any).config_profile || null,
-              isUp: adapter.isUp,
+              macAddress,
+              ipAddress,
+              subnetMask,
+              gateway,
+              mode,
+              configProfile,
+              isUp,
               updatedAt: new Date(),
             },
           });
       } catch (error) {
         this.logger.error(
-          `Error upserting adapter "${adapter.name}" for device ${deviceId}: ${error}`,
+          `Error upserting adapter "${a.name}" for device ${deviceId}: ${error}`,
         );
+      }
+    }
+  }
+
+  /**
+   * Trigger subnet scans for each adapter that has an IP + subnet mask.
+   * Only fires on first heartbeat after connect, then respects autoScanIntervalSeconds.
+   * Uses DB adapter data (not raw heartbeat) since heartbeat may have null IPs.
+   */
+  private async maybeTrigerSubnetScans(deviceId: string, _adapters: any[]) {
+    const now = Date.now();
+    const lastScan = this.lastSubnetScanTime.get(deviceId) ?? 0;
+
+    // Get tenant scan interval setting
+    let scanIntervalSecs = 300; // default 5 minutes
+    try {
+      const [device] = await this.db
+        .select({ tenantId: devices.tenantId })
+        .from(devices)
+        .where(eq(devices.id, deviceId))
+        .limit(1);
+      if (device) {
+        const [tenant] = await this.db
+          .select({ settings: tenants.settings })
+          .from(tenants)
+          .where(eq(tenants.id, device.tenantId))
+          .limit(1);
+        const s = (tenant?.settings ?? {}) as Record<string, any>;
+        scanIntervalSecs = s.autoScanIntervalSeconds ?? 300;
+      }
+    } catch (e: any) {
+      this.logger.warn(`Failed to read scan interval for ${deviceId}: ${e.message}`);
+    }
+
+    // If auto-scan is disabled (interval=0), only scan on first heartbeat
+    const intervalMs = scanIntervalSecs > 0 ? scanIntervalSecs * 1000 : Infinity;
+    const isFirstScan = lastScan === 0;
+    const isIntervalElapsed = (now - lastScan) >= intervalMs;
+
+    if (!isFirstScan && !isIntervalElapsed) return;
+
+    this.lastSubnetScanTime.set(deviceId, now);
+
+    const client = this.registry.getSocket(deviceId);
+    if (!client || client.readyState !== 1) return;
+
+    // Query DB for adapters with IPs (heartbeat data may have null IPs
+    // because Rust serializes as snake_case but JS upsert reads camelCase,
+    // leaving DB IPs from previous working heartbeats intact)
+    let dbAdapters: any[] = [];
+    try {
+      dbAdapters = await this.db
+        .select({
+          name: deviceAdapters.name,
+          ipAddress: deviceAdapters.ipAddress,
+          subnetMask: deviceAdapters.subnetMask,
+          isUp: deviceAdapters.isUp,
+        })
+        .from(deviceAdapters)
+        .where(eq(deviceAdapters.deviceId, deviceId));
+    } catch (e: any) {
+      this.logger.warn(`Failed to query adapters for ${deviceId}: ${e.message}`);
+      return;
+    }
+
+    // Filter to scannable adapters (has IP + mask, is up, skip loopback + cellular)
+    const scannableAdapters = dbAdapters.filter(a =>
+      a.ipAddress &&
+      a.subnetMask &&
+      a.isUp !== false &&
+      a.name !== 'lo' &&
+      a.name !== 'auto' &&
+      // Skip cellular/WAN adapters — not local networks
+      !a.name?.startsWith('wwan'),
+    );
+
+    if (scannableAdapters.length === 0) return;
+
+    this.logger.log(
+      `Subnet scan: triggering for ${deviceId} — ${scannableAdapters.length} adapters: ${scannableAdapters.map(a => `${a.name}(${a.ipAddress})`).join(', ')}`,
+    );
+
+    for (const adapter of scannableAdapters) {
+      try {
+        client.send(JSON.stringify({
+          type: 'network_scan',
+          payload: {
+            adapter_name: adapter.name,
+            scan_type: 'deep',
+            timeout_ms: 3000,
+            concurrency: 50,
+            // Send IP/mask from DB so agent doesn't need to run `ip` command
+            ip_address: adapter.ipAddress,
+            subnet_mask: adapter.subnetMask,
+          },
+        }));
+      } catch (e: any) {
+        this.logger.warn(`Failed to send subnet scan for ${adapter.name} on ${deviceId}: ${e.message}`);
       }
     }
   }

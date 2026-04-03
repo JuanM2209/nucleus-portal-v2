@@ -5,14 +5,15 @@ export function useDashboardStats() {
   return useQuery({
     queryKey: ['dashboard-stats'],
     queryFn: async () => {
-      const [devices, sessions, health, orgs, logs] = await Promise.all([
+      const [devices, allSessions, health, orgs, logs, logStats] = await Promise.all([
         api.get<any>('/devices?limit=1&status=all'),
-        api.get<any>('/sessions'),
+        api.get<any>('/sessions/all').catch(() => ({ data: [] })),
         api.get<any>('/health'),
         api.get<any>('/orgs').catch(() => ({ data: [] })),
         api.get<any>('/logs?limit=1').catch(() => ({ data: [], total: 0 })),
+        api.get<any>('/logs/stats').catch(() => ({ data: { actionsPerDay: [], topUsers: [], actionCounts: [] } })),
       ]);
-      return { devices, sessions, health, orgs, logs };
+      return { devices, allSessions, health, orgs, logs, logStats };
     },
     refetchInterval: 30000,
   });

@@ -146,12 +146,20 @@ pub struct NetworkScanPayload {
     pub ports: Option<Vec<u16>>,    // custom port list (overrides scan_type)
     pub timeout_ms: Option<u64>,
     pub concurrency: Option<u32>,
+    /// IP address passed from backend (avoids needing `ip` command in container)
+    pub ip_address: Option<String>,
+    /// Subnet mask passed from backend (avoids needing `ip` command in container)
+    pub subnet_mask: Option<String>,
 }
 
 /// Scanned host result
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScannedHost {
     pub ip: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mac: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vendor: Option<String>,
     pub ports: Vec<ScannedPort>,
     pub latency_ms: Option<u32>,
 }

@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use tracing::{info, warn, error};
 
+mod arp_discovery;
 mod comms;
 mod config;
 mod connection;

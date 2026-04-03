@@ -406,7 +406,7 @@ dependencies = [
 
 [[package]]
 name = "nucleus-agent"
-version = "0.24.0"
+version = "0.25.0"
 dependencies = [
  "base64",
  "bytes",
@@ -428,7 +428,7 @@ dependencies = [
 
 [[package]]
 name = "nucleus-common"
-version = "0.24.0"
+version = "0.25.0"
 dependencies = [
  "serde",
  "serde_json",

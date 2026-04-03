@@ -88,7 +88,7 @@ async fn connect_and_run(config: &AgentConfig) -> Result<(), Box<dyn std::error:
         // Initial delay — let the connection stabilize first
         tokio::time::sleep(Duration::from_secs(5)).await;
         info!("Auto-discovery: scanning localhost for local services...");
-        crate::scanner::run_localhost_scan(auto_scan_tx.clone(), "auto".to_string());
+        crate::scanner::run_localhost_scan(auto_scan_tx.clone(), "localhost".to_string());
 
         // Periodic re-scan if passive_interval_secs > 0
         if auto_scan_interval > 0 {
@@ -97,7 +97,7 @@ async fn connect_and_run(config: &AgentConfig) -> Result<(), Box<dyn std::error:
             loop {
                 interval.tick().await;
                 info!("Periodic auto-scan: scanning localhost...");
-                crate::scanner::run_localhost_scan(auto_scan_tx.clone(), "auto".to_string());
+                crate::scanner::run_localhost_scan(auto_scan_tx.clone(), "localhost".to_string());
             }
         }
     });
@@ -291,18 +291,24 @@ async fn handle_text_message(
             if adapter_name == "localhost" || adapter_name == "auto" {
                 crate::scanner::run_localhost_scan(tx.clone(), adapter_name);
             } else {
-                // Get adapter IP and subnet from current system state
-                let adapters = crate::health::collect_adapters_pub();
-                if let Some(adapter) = adapters.iter().find(|a| a.name == adapter_name) {
-                    if let (Some(ip), Some(mask)) = (&adapter.ip_address, &adapter.subnet_mask) {
-                        crate::scanner::run_scan(tx.clone(), adapter_name, ip.clone(), mask.clone(), p);
-                    } else {
-                        // Adapter has no IP — still scan localhost for local services
-                        info!("Adapter {} has no IP — falling back to localhost scan", adapter_name);
-                        crate::scanner::run_localhost_scan(tx.clone(), adapter_name);
-                    }
+                // Try IP/mask from payload first (sent by backend from DB)
+                // Fall back to reading from system state via `ip` command
+                let (ip_opt, mask_opt) = if p.ip_address.is_some() && p.subnet_mask.is_some() {
+                    (p.ip_address.clone(), p.subnet_mask.clone())
                 } else {
-                    warn!("Adapter {} not found — falling back to localhost scan", adapter_name);
+                    let adapters = crate::health::collect_adapters_pub();
+                    adapters.iter()
+                        .find(|a| a.name == adapter_name)
+                        .map(|a| (a.ip_address.clone(), a.subnet_mask.clone()))
+                        .unwrap_or((None, None))
+                };
+
+                if let (Some(ip), Some(mask)) = (ip_opt, mask_opt) {
+                    info!("Scanning adapter {} ({}/ {})", adapter_name, ip, mask);
+                    crate::scanner::run_scan(tx.clone(), adapter_name, ip, mask, p);
+                } else {
+                    // No IP from payload or system — scan localhost only
+                    info!("Adapter {} has no IP — falling back to localhost scan", adapter_name);
                     crate::scanner::run_localhost_scan(tx.clone(), adapter_name);
                 }
             }
@@ -324,7 +330,7 @@ async fn handle_text_message(
             if let Ok(json) = serde_json::to_string(&heartbeat) {
                 let _ = tx.send(Message::Text(json));
             }
-            crate::scanner::run_localhost_scan(tx.clone(), "auto".to_string());
+            crate::scanner::run_localhost_scan(tx.clone(), "localhost".to_string());
         }
         // Chisel V2 transport
         Ok(ServerToAgent::PortExpose { service_name, local_addr, remote_port }) => {

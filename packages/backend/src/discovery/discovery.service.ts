@@ -1,10 +1,12 @@
-import { Injectable, Inject } from '@nestjs/common';
+import { Injectable, Inject, Logger } from '@nestjs/common';
 import { DATABASE } from '../database/database.module';
-import { devices, deviceAdapters, discoveredEndpoints, endpointServices } from '../database/schema';
-import { eq, and, inArray } from 'drizzle-orm';
+import { devices, deviceAdapters, discoveredEndpoints, endpointServices, tenants } from '../database/schema';
+import { eq, and, inArray, lt, sql } from 'drizzle-orm';
 
 @Injectable()
 export class DiscoveryService {
+  private readonly logger = new Logger(DiscoveryService.name);
+
   constructor(@Inject(DATABASE) private readonly db: any) {}
 
   async listAdapters(tenantId: string, deviceId: string) {
@@ -97,5 +99,57 @@ export class DiscoveryService {
       latency: ep.metadata?.latency ?? null,
       services: servicesByEndpointId.get(ep.id) ?? [],
     }));
+  }
+
+  /**
+   * Remove stale endpoints that haven't been seen since the given cutoff.
+   * Also removes their associated services (cascade via endpointId FK).
+   */
+  async cleanupStaleEndpoints(deviceId: string, staleThresholdSeconds: number): Promise<number> {
+    const cutoff = new Date(Date.now() - staleThresholdSeconds * 1000);
+
+    // Find stale endpoints
+    const staleEndpoints = await this.db
+      .select({ id: discoveredEndpoints.id })
+      .from(discoveredEndpoints)
+      .where(
+        and(
+          eq(discoveredEndpoints.deviceId, deviceId),
+          lt(discoveredEndpoints.lastSeenAt, cutoff),
+        ),
+      );
+
+    if (staleEndpoints.length === 0) return 0;
+
+    const staleIds = staleEndpoints.map((e: any) => e.id);
+
+    // Delete services first (FK constraint)
+    await this.db
+      .delete(endpointServices)
+      .where(inArray(endpointServices.endpointId, staleIds));
+
+    // Delete endpoints
+    const result = await this.db
+      .delete(discoveredEndpoints)
+      .where(inArray(discoveredEndpoints.id, staleIds));
+
+    const count = result.rowCount ?? staleIds.length;
+    this.logger.log(`Cleaned up ${count} stale endpoints for device ${deviceId} (threshold: ${staleThresholdSeconds}s)`);
+    return count;
+  }
+
+  /**
+   * Get the stale endpoint threshold from tenant settings.
+   * Default: 45 seconds.
+   */
+  async getStaleThreshold(tenantId: string): Promise<number> {
+    const [tenant] = await this.db
+      .select({ settings: tenants.settings })
+      .from(tenants)
+      .where(eq(tenants.id, tenantId))
+      .limit(1);
+
+    const settings = (tenant?.settings ?? {}) as Record<string, any>;
+    return settings.endpointStaleThresholdSeconds ?? 45;
   }
 }

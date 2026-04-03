@@ -31,7 +31,7 @@ export class PortAllocationService {
    * Allocate a remote port for a device+targetPort combination.
    * Returns existing allocation if one already exists (idempotent).
    */
-  async allocatePort(deviceId: string, targetPort: number): Promise<PortAllocation> {
+  async allocatePort(deviceId: string, targetPort: number, userId?: string): Promise<PortAllocation> {
     // Check for existing active allocation
     const existing = await this.db
       .select()
@@ -68,6 +68,7 @@ export class PortAllocationService {
       .insert(portAllocations)
       .values({
         deviceId,
+        userId: userId ?? null,
         targetPort,
         remotePort,
         serviceName,
@@ -99,8 +100,7 @@ export class PortAllocationService {
     if (existing.length === 0) return null;
 
     await this.db
-      .update(portAllocations)
-      .set({ status: 'released' })
+      .delete(portAllocations)
       .where(eq(portAllocations.id, existing[0].id));
 
     this.logger.log(`Released: ${existing[0].serviceName} (device=${deviceId}, target=${targetPort})`);
@@ -131,8 +131,7 @@ export class PortAllocationService {
 
     if (active.length > 0) {
       await this.db
-        .update(portAllocations)
-        .set({ status: 'released' })
+        .delete(portAllocations)
         .where(
           and(
             eq(portAllocations.deviceId, deviceId),

@@ -366,7 +366,7 @@ export function AdapterScanCard({ adapter, deviceId, endpointCount, scanSummary,
           <div className="flex">
             <button
               onClick={() => handleScan('standard')}
-              disabled={isScanning || !adapter.isUp}
+              disabled={isScanning || (!adapter.isUp && !adapter.ipAddress)}
               className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2 rounded-l-lg text-sm font-medium bg-primary text-on-primary hover:bg-primary-fixed-dim disabled:bg-surface-container-high disabled:text-on-surface-variant/30 disabled:cursor-not-allowed transition"
             >
               <Search className="w-4 h-4" />
@@ -374,7 +374,7 @@ export function AdapterScanCard({ adapter, deviceId, endpointCount, scanSummary,
             </button>
             <button
               onClick={() => setShowDropdown(!showDropdown)}
-              disabled={isScanning || !adapter.isUp}
+              disabled={isScanning || (!adapter.isUp && !adapter.ipAddress)}
               className="inline-flex items-center px-2 py-2 rounded-r-lg text-sm font-medium bg-primary text-on-primary hover:bg-primary-fixed-dim disabled:bg-surface-container-high disabled:text-on-surface-variant/30 disabled:cursor-not-allowed border-l border-on-primary/20 transition"
             >
               <ChevronDown className="w-4 h-4" />

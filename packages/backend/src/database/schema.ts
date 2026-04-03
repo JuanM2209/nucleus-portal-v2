@@ -304,11 +304,30 @@ export const userPreferences = pgTable('user_preferences', {
   timezone: varchar('timezone', { length: 100 }).notNull().default('UTC'),
 });
 
+// ── Pending Devices (awaiting approval) ──
+
+export const pendingDevices = pgTable('pending_devices', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.id),
+  serialNumber: varchar('serial_number', { length: 100 }).notNull(),
+  agentVersion: varchar('agent_version', { length: 50 }),
+  ipAddress: varchar('ip_address', { length: 45 }),
+  metadata: jsonb('metadata').notNull().default({}),
+  status: varchar('status', { length: 20 }).notNull().default('pending'),
+  requestedAt: timestamp('requested_at', { withTimezone: true }).notNull().defaultNow(),
+  reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
+  reviewedBy: uuid('reviewed_by').references(() => users.id),
+}, (table) => [
+  uniqueIndex('pending_devices_tenant_serial_idx').on(table.tenantId, table.serialNumber),
+  index('idx_pending_devices_tenant_status').on(table.tenantId, table.status),
+]);
+
 // ── Port Allocations (Rathole V2 transport) ──
 
 export const portAllocations = pgTable('port_allocations', {
   id: uuid('id').primaryKey().defaultRandom(),
   deviceId: uuid('device_id').notNull().references(() => devices.id, { onDelete: 'cascade' }),
+  userId: uuid('user_id').references(() => users.id),
   targetPort: integer('target_port').notNull(),
   remotePort: integer('remote_port').notNull().unique(),
   serviceName: varchar('service_name', { length: 100 }).notNull(),
@@ -319,6 +338,7 @@ export const portAllocations = pgTable('port_allocations', {
   uniqueIndex('port_alloc_device_port_idx').on(table.deviceId, table.targetPort),
   index('idx_port_alloc_status').on(table.status),
   index('idx_port_alloc_remote').on(table.remotePort),
+  index('idx_port_alloc_user').on(table.userId),
 ]);
 
 // ── Agent Heartbeats ──

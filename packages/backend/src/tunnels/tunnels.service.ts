@@ -1,14 +1,14 @@
 import { Injectable, Inject, BadRequestException, NotFoundException, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DATABASE } from '../database/database.module';
-import { accessSessions, devices, exposures } from '../database/schema';
+import { accessSessions, devices, exposures, portAllocations, users, orgDevices, organizations, userPreferences } from '../database/schema';
 import { AgentRegistryService } from '../agent-gateway/agent-registry.service';
 import { StreamBridgeService } from './stream-bridge.service';
 import { TunnelProxyService } from './tunnel-proxy.service';
 import { ExposureService } from './exposure.service';
 import { AuditService } from '../audit/audit.service';
 import { LogsService } from '../logs/logs.service';
-import { eq, and, gte, sql } from 'drizzle-orm';
+import { eq, and, gte, desc, sql, inArray } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
 
 @Injectable()
@@ -32,7 +32,19 @@ export class TunnelsService {
   }
 
   async createSession(user: any, params: any) {
-    const { deviceId, targetIp, targetPort, tunnelType, durationMinutes = 480 } = params; // Default 8 hours
+    const { deviceId, targetIp, targetPort, tunnelType } = params;
+
+    // Resolve session duration: explicit param > user preference > default 8h
+    let durationMinutes = params.durationMinutes;
+    if (!durationMinutes) {
+      const [prefs] = await this.db
+        .select({ sessionDurationHours: userPreferences.sessionDurationHours })
+        .from(userPreferences)
+        .where(eq(userPreferences.userId, user.id))
+        .limit(1);
+      const hours = prefs?.sessionDurationHours ?? 8;
+      durationMinutes = hours * 60;
+    }
 
     const expiresAt = new Date(Date.now() + durationMinutes * 60 * 1000);
     const proxyToken = randomBytes(16).toString('hex');
@@ -201,17 +213,287 @@ export class TunnelsService {
     };
   }
 
-  async listActiveSessions(tenantId: string, userId: string) {
-    return this.db
-      .select()
-      .from(accessSessions)
-      .where(
-        and(
+  async listActiveSessions(tenantId: string, userId: string, includeHistory = false) {
+    // Browser proxy sessions
+    const sessionFilter = includeHistory
+      ? and(
+          eq(accessSessions.tenantId, tenantId),
+          eq(accessSessions.userId, userId),
+        )
+      : and(
           eq(accessSessions.tenantId, tenantId),
           eq(accessSessions.userId, userId),
           eq(accessSessions.status, 'active'),
+        );
+
+    const browserSessions = await this.db
+      .select()
+      .from(accessSessions)
+      .where(sessionFilter)
+      .orderBy(desc(accessSessions.requestedAt))
+      .limit(includeHistory ? 50 : 100);
+
+    // Export/chisel port allocations (always active only, joined with device for name)
+    const exportAllocations = await this.db
+      .select({
+        id: portAllocations.id,
+        deviceId: portAllocations.deviceId,
+        targetPort: portAllocations.targetPort,
+        remotePort: portAllocations.remotePort,
+        serviceName: portAllocations.serviceName,
+        status: portAllocations.status,
+        createdAt: portAllocations.createdAt,
+        expiresAt: portAllocations.expiresAt,
+        deviceName: devices.name,
+        serialNumber: devices.serialNumber,
+      })
+      .from(portAllocations)
+      .leftJoin(devices, eq(portAllocations.deviceId, devices.id))
+      .where(
+        and(
+          eq(devices.tenantId, tenantId),
+          eq(portAllocations.status, 'active'),
         ),
       );
+
+    // Normalize export allocations to look like sessions
+    const exportSessions = exportAllocations.map((a: any) => ({
+      id: a.id,
+      deviceId: a.deviceId,
+      deviceName: a.deviceName || a.serialNumber,
+      targetIp: 'localhost',
+      targetPort: a.targetPort,
+      tunnelType: 'export' as const,
+      status: 'active',
+      requestedAt: a.createdAt,
+      expiresAt: a.expiresAt,
+      remotePort: a.remotePort,
+      serviceName: a.serviceName,
+      proxyUrl: null,
+      localEndpoint: `localhost:${a.remotePort}`,
+    }));
+
+    return [...browserSessions, ...exportSessions];
+  }
+
+  /**
+   * List ALL active sessions across all users in a tenant.
+   * Includes org info resolved via orgDevices junction table.
+   */
+  async listAllTenantSessions(tenantId: string) {
+    // Browser/local sessions — join with users + devices for names
+    const browserSessions = await this.db
+      .select({
+        id: accessSessions.id,
+        deviceId: accessSessions.deviceId,
+        userId: accessSessions.userId,
+        targetIp: accessSessions.targetIp,
+        targetPort: accessSessions.targetPort,
+        tunnelType: accessSessions.tunnelType,
+        status: accessSessions.status,
+        requestedAt: accessSessions.requestedAt,
+        openedAt: accessSessions.openedAt,
+        expiresAt: accessSessions.expiresAt,
+        proxyPath: accessSessions.proxyPath,
+        proxySubdomain: accessSessions.proxySubdomain,
+        localPort: accessSessions.localPort,
+        userIp: accessSessions.userIp,
+        deviceName: devices.name,
+        deviceSerial: devices.serialNumber,
+        userName: users.displayName,
+        userEmail: users.email,
+      })
+      .from(accessSessions)
+      .leftJoin(devices, eq(accessSessions.deviceId, devices.id))
+      .leftJoin(users, eq(accessSessions.userId, users.id))
+      .where(
+        and(
+          eq(accessSessions.tenantId, tenantId),
+          eq(accessSessions.status, 'active'),
+        ),
+      )
+      .orderBy(desc(accessSessions.requestedAt))
+      .limit(200);
+
+    // Export/chisel port allocations — now join users too (userId added to table)
+    const exportAllocations = await this.db
+      .select({
+        id: portAllocations.id,
+        deviceId: portAllocations.deviceId,
+        userId: portAllocations.userId,
+        targetPort: portAllocations.targetPort,
+        remotePort: portAllocations.remotePort,
+        serviceName: portAllocations.serviceName,
+        status: portAllocations.status,
+        createdAt: portAllocations.createdAt,
+        expiresAt: portAllocations.expiresAt,
+        deviceName: devices.name,
+        deviceSerial: devices.serialNumber,
+        userName: users.displayName,
+        userEmail: users.email,
+      })
+      .from(portAllocations)
+      .leftJoin(devices, eq(portAllocations.deviceId, devices.id))
+      .leftJoin(users, eq(portAllocations.userId, users.id))
+      .where(
+        and(
+          eq(devices.tenantId, tenantId),
+          eq(portAllocations.status, 'active'),
+        ),
+      );
+
+    const exportSessions = exportAllocations.map((a: any) => ({
+      id: a.id,
+      deviceId: a.deviceId,
+      userId: a.userId,
+      targetIp: 'localhost',
+      targetPort: a.targetPort,
+      tunnelType: 'export' as const,
+      status: 'active',
+      requestedAt: a.createdAt,
+      openedAt: a.createdAt,
+      expiresAt: a.expiresAt,
+      remotePort: a.remotePort,
+      serviceName: a.serviceName,
+      deviceName: a.deviceName || a.deviceSerial,
+      deviceSerial: a.deviceSerial,
+      userName: a.userName,
+      userEmail: a.userEmail,
+      localEndpoint: `localhost:${a.remotePort}`,
+      proxyPath: null,
+      proxySubdomain: null,
+      localPort: null,
+      userIp: null,
+    }));
+
+    const allSessions = [...browserSessions, ...exportSessions];
+
+    // Resolve device → organization mapping via org_devices
+    const deviceIdSet = new Set<string>();
+    for (const s of allSessions) {
+      if ((s as any).deviceId) deviceIdSet.add((s as any).deviceId);
+    }
+    const deviceIds = Array.from(deviceIdSet);
+
+    let deviceOrgMap: Record<string, { id: string; name: string }[]> = {};
+    if (deviceIds.length > 0) {
+      const orgRows = await this.db
+        .select({
+          deviceId: orgDevices.deviceId,
+          orgId: organizations.id,
+          orgName: organizations.name,
+        })
+        .from(orgDevices)
+        .innerJoin(organizations, and(
+          eq(orgDevices.orgId, organizations.id),
+          eq(organizations.isActive, true),
+        ))
+        .where(inArray(orgDevices.deviceId, deviceIds));
+
+      for (const row of orgRows) {
+        if (!deviceOrgMap[row.deviceId]) deviceOrgMap[row.deviceId] = [];
+        deviceOrgMap[row.deviceId].push({ id: row.orgId, name: row.orgName });
+      }
+    }
+
+    // Enrich sessions with org info
+    return allSessions.map((s: any) => ({
+      ...s,
+      organizations: s.deviceId ? (deviceOrgMap[s.deviceId] || []) : [],
+    }));
+  }
+
+  /**
+   * Full session history for the tenant — audit trail with user + device info.
+   * Includes closed/expired sessions with duration calculations.
+   */
+  async listSessionHistory(tenantId: string, query: {
+    page?: number;
+    limit?: number;
+    deviceId?: string;
+    userId?: string;
+    tunnelType?: string;
+    status?: string;
+  }) {
+    const { page = 1, limit = 50, deviceId, userId, tunnelType, status } = query;
+    const offset = (page - 1) * limit;
+
+    const conditions: any[] = [eq(accessSessions.tenantId, tenantId)];
+    if (deviceId) conditions.push(eq(accessSessions.deviceId, deviceId));
+    if (userId) conditions.push(eq(accessSessions.userId, userId));
+    if (tunnelType) conditions.push(eq(accessSessions.tunnelType, tunnelType));
+    if (status) conditions.push(eq(accessSessions.status, status));
+
+    const where = and(...conditions);
+
+    const [data, countResult] = await Promise.all([
+      this.db
+        .select({
+          id: accessSessions.id,
+          deviceId: accessSessions.deviceId,
+          userId: accessSessions.userId,
+          targetIp: accessSessions.targetIp,
+          targetPort: accessSessions.targetPort,
+          tunnelType: accessSessions.tunnelType,
+          status: accessSessions.status,
+          requestedAt: accessSessions.requestedAt,
+          openedAt: accessSessions.openedAt,
+          closedAt: accessSessions.closedAt,
+          expiresAt: accessSessions.expiresAt,
+          closeReason: accessSessions.closeReason,
+          proxyPath: accessSessions.proxyPath,
+          userIp: accessSessions.userIp,
+          userAgent: accessSessions.userAgent,
+          bytesTx: accessSessions.bytesTx,
+          bytesRx: accessSessions.bytesRx,
+          deviceName: devices.name,
+          deviceSerial: devices.serialNumber,
+          userName: users.displayName,
+          userEmail: users.email,
+        })
+        .from(accessSessions)
+        .leftJoin(devices, eq(accessSessions.deviceId, devices.id))
+        .leftJoin(users, eq(accessSessions.userId, users.id))
+        .where(where)
+        .orderBy(desc(accessSessions.requestedAt))
+        .limit(limit)
+        .offset(offset),
+      this.db
+        .select({ count: sql<number>`count(*)` })
+        .from(accessSessions)
+        .where(where),
+    ]);
+
+    // Resolve device → org mapping
+    const deviceIdSet = new Set<string>();
+    for (const r of data) { if ((r as any).deviceId) deviceIdSet.add((r as any).deviceId); }
+    const deviceIds = Array.from(deviceIdSet);
+    let deviceOrgMap: Record<string, { id: string; name: string }[]> = {};
+    if (deviceIds.length > 0) {
+      const orgRows = await this.db
+        .select({
+          deviceId: orgDevices.deviceId,
+          orgId: organizations.id,
+          orgName: organizations.name,
+        })
+        .from(orgDevices)
+        .innerJoin(organizations, and(
+          eq(orgDevices.orgId, organizations.id),
+          eq(organizations.isActive, true),
+        ))
+        .where(inArray(orgDevices.deviceId, deviceIds));
+      for (const row of orgRows) {
+        if (!deviceOrgMap[row.deviceId]) deviceOrgMap[row.deviceId] = [];
+        deviceOrgMap[row.deviceId].push({ id: row.orgId, name: row.orgName });
+      }
+    }
+
+    const enriched = data.map((r: any) => ({
+      ...r,
+      organizations: r.deviceId ? (deviceOrgMap[r.deviceId] || []) : [],
+    }));
+
+    return { data: enriched, total: Number(countResult[0]?.count || 0) };
   }
 
   async findById(tenantId: string, id: string) {
@@ -224,8 +506,8 @@ export class TunnelsService {
     return session || null;
   }
 
-  async extendSession(tenantId: string, id: string) {
-    const newExpiry = new Date(Date.now() + 60 * 60 * 1000); // +1 hour
+  async extendSession(tenantId: string, id: string, additionalMinutes = 60) {
+    const newExpiry = new Date(Date.now() + additionalMinutes * 60 * 1000);
     const [session] = await this.db
       .update(accessSessions)
       .set({ expiresAt: newExpiry })
@@ -243,7 +525,7 @@ export class TunnelsService {
   }
 
   async closeSession(tenantId: string, id: string, reason: string) {
-    // Mark this attachment as closed (do NOT destroy bridges — other attachments may still use them)
+    // First, try to close as a regular access session
     const [session] = await this.db
       .update(accessSessions)
       .set({
@@ -259,7 +541,10 @@ export class TunnelsService {
       )
       .returning();
 
-    if (!session) throw new NotFoundException('Session not found');
+    // If not found in accessSessions, try export port allocations
+    if (!session) {
+      return this.closeExportSession(tenantId, id, reason);
+    }
 
     // Decrement exposure refCount — if it hits 0, the idle timer starts.
     // The exposure (bridges + agent tunnels) is only destroyed when the timer fires
@@ -315,6 +600,87 @@ export class TunnelsService {
     }).catch((e) => this.logger.error(`Activity log (close) failed: ${e.message}`));
 
     return session;
+  }
+
+  /**
+   * Close an export (port allocation) session.
+   * Releases the chisel port and sends port_unexpose to the agent.
+   */
+  private async closeExportSession(tenantId: string, id: string, reason: string) {
+    // Find the port allocation and verify it belongs to this tenant
+    const [allocation] = await this.db
+      .select({
+        id: portAllocations.id,
+        deviceId: portAllocations.deviceId,
+        targetPort: portAllocations.targetPort,
+        remotePort: portAllocations.remotePort,
+        serviceName: portAllocations.serviceName,
+        status: portAllocations.status,
+        createdAt: portAllocations.createdAt,
+        tenantId: devices.tenantId,
+      })
+      .from(portAllocations)
+      .innerJoin(devices, eq(portAllocations.deviceId, devices.id))
+      .where(
+        and(
+          eq(portAllocations.id, id),
+          eq(devices.tenantId, tenantId),
+          eq(portAllocations.status, 'active'),
+        ),
+      )
+      .limit(1);
+
+    if (!allocation) throw new NotFoundException('Session not found');
+
+    // Delete the port allocation
+    await this.db
+      .delete(portAllocations)
+      .where(eq(portAllocations.id, id));
+
+    // Send port_unexpose command to agent
+    const socket = this.agentRegistry.getSocket(allocation.deviceId);
+    if (socket?.readyState === 1) {
+      socket.send(JSON.stringify({
+        type: 'port_unexpose',
+        service_name: allocation.serviceName,
+      }));
+      this.logger.log(`Sent port_unexpose to agent: ${allocation.serviceName}`);
+    }
+
+    // Audit + Activity log
+    const closeDetails = {
+      targetPort: allocation.targetPort,
+      remotePort: allocation.remotePort,
+      serviceName: allocation.serviceName,
+      tunnelType: 'export',
+      closeReason: reason,
+    };
+
+    this.auditService.log({
+      tenantId,
+      deviceId: allocation.deviceId,
+      action: 'session.close',
+      resourceType: 'port_allocation',
+      resourceId: id,
+      details: closeDetails,
+    }).catch(() => {});
+
+    this.logsService.logActivity({
+      deviceId: allocation.deviceId,
+      action: 'session.export',
+      resourceType: 'port_allocation',
+      resourceId: id,
+      details: { ...closeDetails, subAction: 'unexpose' },
+    }).catch((e) => this.logger.error(`Activity log (export close) failed: ${e.message}`));
+
+    return {
+      id: allocation.id,
+      deviceId: allocation.deviceId,
+      targetPort: allocation.targetPort,
+      tunnelType: 'export',
+      status: 'closed',
+      closeReason: reason,
+    };
   }
 
   /** Fire-and-forget audit + activity log for session creation */

@@ -382,8 +382,23 @@ export class ScannerService {
     adapterId: string,
     results: ScanResult[],
   ): Promise<void> {
+    // Collect all adapter IPs for this device to filter out self-IPs
+    const allAdapters = await this.db
+      .select({ ipAddress: deviceAdapters.ipAddress })
+      .from(deviceAdapters)
+      .where(eq(deviceAdapters.deviceId, deviceId));
+    const selfIps = new Set(
+      allAdapters.map((a: any) => a.ipAddress).filter(Boolean),
+    );
+
     for (const hostResult of results) {
       if (!hostResult.isAlive) continue;
+
+      // Skip self-IPs — these are the device's own adapter IPs, not external devices
+      if (selfIps.has(hostResult.ip)) {
+        this.logger.debug(`Skipping self-IP ${hostResult.ip} for device ${deviceId}`);
+        continue;
+      }
 
       try {
         // First try to find existing endpoint to preserve metadata
@@ -397,7 +412,8 @@ export class ScannerService {
           ))
           .limit(1);
 
-        const scanMeta = { reachability: hostResult.reachability, latency: hostResult.latency ?? null };
+        const vendor = (hostResult as any).vendor ?? null;
+        const scanMeta = { reachability: hostResult.reachability, latency: hostResult.latency ?? null, vendor };
         // Merge: keep existing type/classification, add scan data
         const mergedMeta = existing?.metadata
           ? { ...(existing.metadata as Record<string, any>), ...scanMeta }
@@ -522,12 +538,13 @@ export class ScannerService {
     }
 
     // Convert agent results to ScanResult format
+    // Agent now sends MAC + vendor from ARP discovery, and hosts may have 0 ports
     const results: ScanResult[] = hosts.map((host: any) => ({
       ip: host.ip,
       hostname: null,
-      mac: null,
+      mac: host.mac || null,
       latency: host.latency_ms || null,
-      isAlive: true, // agent only returns alive hosts
+      isAlive: true, // agent only returns alive hosts (ARP-confirmed)
       ports: (host.ports || []).map((p: any) => ({
         port: p.port,
         protocol: 'tcp',
@@ -537,6 +554,7 @@ export class ScannerService {
         banner: null,
       })),
       reachability: 'requires-agent',
+      vendor: host.vendor || null,
     }));
 
     // Persist to DB — either via scan job or directly for auto-scans
@@ -595,56 +613,46 @@ export class ScannerService {
       return;
     }
 
-    // Find or create the adapter (use adapterName or 'auto' as fallback)
-    const effectiveName = adapterName || 'auto';
-    let [adapter] = await this.db
-      .select()
-      .from(deviceAdapters)
-      .where(and(
-        eq(deviceAdapters.deviceId, deviceId),
-        eq(deviceAdapters.name, effectiveName),
-      ))
-      .limit(1);
+    // For localhost/auto scans, use the first real "up" adapter (no fake adapters)
+    // For named adapters (eth0, eth1, etc.), find that specific adapter
+    let adapter: any = null;
+    const isLocalScan = !adapterName || adapterName === 'auto' || adapterName === 'localhost';
 
-    if (!adapter) {
-      // Create the adapter entry
+    if (isLocalScan) {
+      // Find first real adapter that is UP (prefer one with an IP)
+      const realAdapters = await this.db
+        .select()
+        .from(deviceAdapters)
+        .where(and(
+          eq(deviceAdapters.deviceId, deviceId),
+          eq(deviceAdapters.isUp, true),
+        ));
+      // Prefer adapter with IP, then by name priority: eth0 > eth1 > wlan0
+      adapter = realAdapters
+        .filter((a: any) => a.name !== 'auto' && a.name !== 'localhost')
+        .sort((a: any, b: any) => {
+          // Prefer adapters with IPs
+          if (a.ipAddress && !b.ipAddress) return -1;
+          if (!a.ipAddress && b.ipAddress) return 1;
+          return a.name.localeCompare(b.name);
+        })[0] ?? null;
+    } else {
       [adapter] = await this.db
-        .insert(deviceAdapters)
-        .values({
-          deviceId,
-          name: effectiveName,
-          interfaceType: effectiveName === 'auto' ? 'virtual' : 'ethernet',
-          isUp: true,
-          lastSeenAt: new Date(),
-        })
-        .onConflictDoNothing()
-        .returning();
-
-      // If conflict, re-fetch
-      if (!adapter) {
-        [adapter] = await this.db
-          .select()
-          .from(deviceAdapters)
-          .where(and(
-            eq(deviceAdapters.deviceId, deviceId),
-            eq(deviceAdapters.name, effectiveName),
-          ))
-          .limit(1);
-      }
+        .select()
+        .from(deviceAdapters)
+        .where(and(
+          eq(deviceAdapters.deviceId, deviceId),
+          eq(deviceAdapters.name, adapterName),
+        ))
+        .limit(1);
     }
 
     if (!adapter) {
-      this.logger.warn(`Auto-scan: could not find/create adapter for ${deviceId}/${effectiveName}`);
+      this.logger.warn(`Auto-scan: no suitable adapter for ${deviceId}/${adapterName}`);
       return;
     }
 
-    // Update adapter lastSeenAt
-    await this.db
-      .update(deviceAdapters)
-      .set({ isUp: true, lastSeenAt: new Date() })
-      .where(eq(deviceAdapters.id, adapter.id));
-
-    this.logger.log(`Auto-scan: persisting ${results.length} hosts for ${deviceId}/${effectiveName} (adapter=${adapter.id})`);
+    this.logger.log(`Auto-scan: persisting ${results.length} hosts for ${deviceId} under adapter ${adapter.name} (${adapter.id})`);
     await this.persistResults(device.tenantId, deviceId, adapter.id, results);
   }
 

@@ -20,8 +20,16 @@ import {
   FileJson,
   FileText,
   FileDown,
+  Radio,
+  ExternalLink,
+  Network,
+  Timer,
 } from 'lucide-react';
 import { useActivityLogs } from '@/hooks/use-logs';
+import { useSessionHistory } from '@/hooks/use-sessions';
+
+/* ─── Tabs ─── */
+type LogTab = 'activity' | 'sessions';
 
 const ACTION_BADGE_STYLES: Record<string, string> = {
   'user.login': 'bg-primary/10 text-primary',
@@ -80,6 +88,317 @@ const ACTION_TYPE_OPTIONS = [
 const PAGE_SIZE = 25;
 
 export default function LogsPage() {
+  const [activeTab, setActiveTab] = useState<LogTab>('activity');
+
+  return (
+    <div className="min-h-full pb-12">
+      {/* Header */}
+      <div className="pt-8 pb-6 px-2">
+        <h1 className="font-headline text-3xl font-extrabold text-on-surface tracking-tight">
+          Logs
+        </h1>
+        <p className="text-on-surface-variant mt-1">
+          Complete audit trail — all users, devices, sessions, and system activity.
+        </p>
+      </div>
+
+      {/* Tab Bar */}
+      <div className="px-2 mb-4">
+        <div className="flex items-center gap-1 bg-surface-container-low rounded-xl p-1 w-fit">
+          <button
+            onClick={() => setActiveTab('activity')}
+            className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-bold uppercase tracking-wider transition-colors ${
+              activeTab === 'activity'
+                ? 'bg-primary/15 text-primary'
+                : 'text-on-surface-variant hover:bg-surface-container-high'
+            }`}
+          >
+            <Clock className="w-3.5 h-3.5" />
+            Activity Logs
+          </button>
+          <button
+            onClick={() => setActiveTab('sessions')}
+            className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-bold uppercase tracking-wider transition-colors ${
+              activeTab === 'sessions'
+                ? 'bg-primary/15 text-primary'
+                : 'text-on-surface-variant hover:bg-surface-container-high'
+            }`}
+          >
+            <Radio className="w-3.5 h-3.5" />
+            Session History
+          </button>
+        </div>
+      </div>
+
+      {activeTab === 'activity' ? <ActivityLogsTab /> : <SessionHistoryTab />}
+    </div>
+  );
+}
+
+/* ─── Session History Tab ─── */
+
+function SessionHistoryTab() {
+  const [page, setPage] = useState(1);
+  const [typeFilter, setTypeFilter] = useState<string>('');
+  const [statusFilter, setStatusFilter] = useState<string>('');
+  const PAGE_SIZE = 25;
+
+  const { data, isLoading, isError, error, isFetching } = useSessionHistory({
+    page,
+    limit: PAGE_SIZE,
+    tunnelType: typeFilter || undefined,
+    status: statusFilter || undefined,
+  });
+
+  const sessions: readonly any[] = data?.data ?? [];
+  const totalCount = data?.meta?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
+
+  function getStatusColor(status: string): string {
+    switch (status) {
+      case 'active': return 'bg-tertiary/10 text-tertiary';
+      case 'closed': return 'bg-surface-container-highest text-on-surface-variant/60';
+      case 'expired': return 'bg-error/10 text-error';
+      default: return 'bg-surface-container-highest text-on-surface-variant/60';
+    }
+  }
+
+  function getTypeColor(type: string): string {
+    switch (type) {
+      case 'browser': return 'bg-blue-500/10 text-blue-400';
+      case 'export': return 'bg-emerald-500/10 text-emerald-400';
+      case 'local': return 'bg-violet-500/10 text-violet-400';
+      default: return 'bg-surface-container-highest text-on-surface-variant';
+    }
+  }
+
+  function formatDuration(start: string | null, end: string | null): string {
+    if (!start) return '--';
+    const s = new Date(start).getTime();
+    const e = end ? new Date(end).getTime() : Date.now();
+    if (isNaN(s)) return '--';
+    const ms = e - s;
+    if (ms <= 0) return '< 1m';
+    const h = Math.floor(ms / 3_600_000);
+    const m = Math.floor((ms % 3_600_000) / 60_000);
+    if (h > 0) return `${h}h ${m}m`;
+    return `${m}m`;
+  }
+
+  function formatTime(iso: string | null | undefined): string {
+    if (!iso) return '--';
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return '--';
+    return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  }
+
+  return (
+    <div className="px-2 space-y-4">
+      {/* Filters */}
+      <div className="bg-surface-container-low rounded-xl p-4">
+        <div className="flex items-center gap-2 mb-3">
+          <Filter className="w-4 h-4 text-on-surface-variant/60" />
+          <span className="text-xs font-technical text-on-surface-variant/60 uppercase tracking-wider">Filters</span>
+          {isFetching && !isLoading && <Loader2 className="w-3 h-3 animate-spin text-primary ml-2" />}
+        </div>
+        <div className="flex items-center gap-3">
+          <div className="relative">
+            <select
+              value={typeFilter || 'All'}
+              onChange={(e) => { setTypeFilter(e.target.value === 'All' ? '' : e.target.value); setPage(1); }}
+              className="bg-surface-container-highest rounded-xl pl-3 pr-8 py-2 text-xs text-on-surface font-body focus:outline-none focus:ring-2 focus:ring-primary/40 appearance-none"
+            >
+              <option value="All">Type: All</option>
+              <option value="browser">Browser</option>
+              <option value="export">Export</option>
+              <option value="local">Local</option>
+            </select>
+            <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-on-surface-variant pointer-events-none" />
+          </div>
+          <div className="relative">
+            <select
+              value={statusFilter || 'All'}
+              onChange={(e) => { setStatusFilter(e.target.value === 'All' ? '' : e.target.value); setPage(1); }}
+              className="bg-surface-container-highest rounded-xl pl-3 pr-8 py-2 text-xs text-on-surface font-body focus:outline-none focus:ring-2 focus:ring-primary/40 appearance-none"
+            >
+              <option value="All">Status: All</option>
+              <option value="active">Active</option>
+              <option value="closed">Closed</option>
+              <option value="expired">Expired</option>
+            </select>
+            <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-on-surface-variant pointer-events-none" />
+          </div>
+          <span className="text-xs font-technical text-on-surface-variant/50 ml-auto">
+            {totalCount} total session{totalCount !== 1 ? 's' : ''}
+          </span>
+        </div>
+      </div>
+
+      {/* Loading */}
+      {isLoading && (
+        <div className="bg-surface-container-low rounded-xl p-12 flex items-center justify-center gap-3 text-on-surface-variant">
+          <Loader2 className="w-5 h-5 animate-spin" />
+          <span className="text-sm">Loading session history...</span>
+        </div>
+      )}
+
+      {/* Error */}
+      {isError && (
+        <div className="bg-error/5 border border-error/20 rounded-xl p-6 flex items-center gap-3 text-error">
+          <AlertTriangle className="w-5 h-5 flex-shrink-0" />
+          <span className="text-sm">Failed to load: {(error as Error)?.message ?? 'Unknown error'}</span>
+        </div>
+      )}
+
+      {/* Table */}
+      {!isLoading && !isError && (
+        <div className="bg-surface-container-low rounded-xl overflow-hidden">
+          <div className="grid grid-cols-[0.7fr_0.9fr_0.8fr_65px_70px_65px_110px_110px_70px_70px] gap-2 px-5 py-3 text-xs font-technical text-on-surface-variant/60 uppercase tracking-wider border-b border-outline-variant/10">
+            <span>Device</span>
+            <span>User</span>
+            <span>Organization</span>
+            <span>Port</span>
+            <span>Type</span>
+            <span>Status</span>
+            <span>Opened</span>
+            <span>Closed</span>
+            <span>Duration</span>
+            <span>Reason</span>
+          </div>
+
+          {sessions.length === 0 && (
+            <div className="px-6 py-12 text-center text-on-surface-variant text-sm">
+              No session history found.
+            </div>
+          )}
+
+          {sessions.map((s: any) => {
+            const orgs: readonly any[] = s.organizations ?? [];
+            return (
+              <div
+                key={s.id}
+                className="grid grid-cols-[0.7fr_0.9fr_0.8fr_65px_70px_65px_110px_110px_70px_70px] gap-2 px-5 py-3 text-sm hover:bg-surface-container-high/50 transition-colors items-center"
+              >
+                {/* Device */}
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <Monitor className="w-3.5 h-3.5 text-on-surface-variant/40 flex-shrink-0" />
+                  <span className="text-on-surface text-xs font-medium truncate">
+                    {(s.deviceName ?? s.deviceSerial ?? '--').replace(/^Nucleus\s+/i, '')}
+                  </span>
+                </div>
+
+                {/* User */}
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className="w-6 h-6 rounded-full bg-primary/15 flex items-center justify-center text-[10px] font-bold text-primary flex-shrink-0">
+                    {(s.userName ?? s.userEmail ?? '?')[0].toUpperCase()}
+                  </div>
+                  <div className="min-w-0">
+                    <span className="text-on-surface text-xs font-medium block truncate">{s.userName ?? 'Unknown'}</span>
+                    {s.userEmail && <span className="text-on-surface-variant/50 text-[10px] font-technical block truncate">{s.userEmail}</span>}
+                  </div>
+                </div>
+
+                {/* Organization */}
+                <div className="flex items-center gap-1 min-w-0 overflow-hidden">
+                  {orgs.length > 0 ? (
+                    <span className="text-on-surface-variant text-[11px] truncate" title={orgs.map((o: any) => o.name).join(', ')}>
+                      {orgs.map((o: any) => o.name).join(' · ')}
+                    </span>
+                  ) : (
+                    <span className="text-on-surface-variant/30 text-xs">--</span>
+                  )}
+                </div>
+
+                {/* Port */}
+                <span className="font-technical text-on-surface text-xs font-medium">
+                  {s.targetPort ?? '--'}
+                </span>
+
+                {/* Type */}
+                <span className={`inline-flex items-center justify-center text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${getTypeColor(s.tunnelType)}`}>
+                  {s.tunnelType === 'browser' ? 'Web' : (s.tunnelType ?? '--')}
+                </span>
+
+                {/* Status */}
+                <span className={`inline-flex items-center gap-1 text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${getStatusColor(s.status)}`}>
+                  <span className={`w-1.5 h-1.5 rounded-full ${s.status === 'active' ? 'bg-tertiary animate-pulse' : 'bg-current/40'}`} />
+                  {s.status}
+                </span>
+
+                {/* Opened */}
+                <span className="font-technical text-on-surface-variant text-xs">
+                  {formatTime(s.requestedAt || s.openedAt)}
+                </span>
+
+                {/* Closed */}
+                <span className="font-technical text-on-surface-variant text-xs">
+                  {formatTime(s.closedAt)}
+                </span>
+
+                {/* Duration */}
+                <span className="font-technical text-on-surface-variant text-xs">
+                  {formatDuration(s.requestedAt || s.openedAt, s.closedAt)}
+                </span>
+
+                {/* Close Reason */}
+                <span className="font-technical text-on-surface-variant/50 text-[10px] truncate">
+                  {s.closeReason ?? (s.status === 'active' ? '' : '--')}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Pagination */}
+      {!isLoading && !isError && totalCount > PAGE_SIZE && (
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-on-surface-variant font-technical">
+            Page {page} of {totalPages} ({totalCount} total)
+          </span>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={page === 1}
+              className="p-2 rounded-xl hover:bg-surface-container-high transition-colors disabled:opacity-30"
+            >
+              <ChevronLeft className="w-4 h-4 text-on-surface-variant" />
+            </button>
+            {Array.from({ length: Math.min(totalPages, 7) }, (_, i) => {
+              let pageNum: number;
+              if (totalPages <= 7) pageNum = i + 1;
+              else if (page <= 4) pageNum = i + 1;
+              else if (page >= totalPages - 3) pageNum = totalPages - 6 + i;
+              else pageNum = page - 3 + i;
+              return (
+                <button
+                  key={pageNum}
+                  onClick={() => setPage(pageNum)}
+                  className={`w-8 h-8 rounded-xl text-xs font-medium transition-colors ${
+                    pageNum === page ? 'bg-primary/20 text-primary' : 'text-on-surface-variant hover:bg-surface-container-high'
+                  }`}
+                >
+                  {pageNum}
+                </button>
+              );
+            })}
+            <button
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              disabled={page === totalPages}
+              className="p-2 rounded-xl hover:bg-surface-container-high transition-colors disabled:opacity-30"
+            >
+              <ChevronRight className="w-4 h-4 text-on-surface-variant" />
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ─── Activity Logs Tab ─── */
+
+function ActivityLogsTab() {
   const [actionFilter, setActionFilter] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState('');
   const [page, setPage] = useState(1);
@@ -111,18 +430,25 @@ export default function LogsPage() {
     : logs;
 
   const getExportData = useCallback(() => {
-    const headers = ['Timestamp', 'User', 'Email', 'Device', 'Organization', 'Action', 'Resource', 'IP Address', 'Details'];
-    const rows = filteredLogs.map((log: any) => [
-      log.createdAt ?? '',
-      log.userName ?? 'System',
-      log.userEmail ?? '',
-      (log.deviceName ?? log.deviceSerial ?? '').replace(/^Nucleus\s+/i, ''),
-      log.orgName ?? '',
-      log.action ?? '',
-      log.resourceType ?? '',
-      log.ipAddress ?? '',
-      typeof log.details === 'object' ? JSON.stringify(log.details) : log.details ?? '',
-    ]);
+    const headers = ['Device', 'User', 'Email', 'Organization', 'Timestamp', 'Action', 'Target', 'Type', 'Details'];
+    const rows = filteredLogs.map((log: any) => {
+      const det = typeof log.details === 'object' ? log.details : {};
+      const target = (det?.targetIp || det?.targetPort)
+        ? `${det.targetIp ?? ''}:${det.targetPort ?? ''}`
+        : log.ipAddress ?? '';
+      const tunnelType = det?.tunnelType === 'browser' ? 'Web' : (det?.tunnelType ?? '');
+      return [
+        (log.deviceName ?? log.deviceSerial ?? '').replace(/^Nucleus\s+/i, ''),
+        log.userName ?? 'System',
+        log.userEmail ?? '',
+        log.deviceOrgs?.length > 0 ? log.deviceOrgs.map((o: any) => o.name).join(', ') : (log.orgName ?? ''),
+        log.createdAt ?? '',
+        log.action ?? '',
+        target,
+        tunnelType,
+        typeof log.details === 'object' ? JSON.stringify(log.details) : log.details ?? '',
+      ];
+    });
     return { headers, rows };
   }, [filteredLogs]);
 
@@ -195,18 +521,7 @@ export default function LogsPage() {
   }, [getExportData, filteredLogs, dateStr]);
 
   return (
-    <div className="min-h-full pb-12">
-      {/* Header */}
-      <div className="pt-8 pb-6 px-2">
-        <h1 className="font-headline text-3xl font-extrabold text-on-surface tracking-tight">
-          Activity Logs
-        </h1>
-        <p className="text-on-surface-variant mt-1">
-          Monitor and audit all system activity across your organizations.
-        </p>
-      </div>
-
-      <div className="px-2 space-y-4">
+    <div className="px-2 space-y-4">
         {/* Filter Bar */}
         <div className="bg-surface-container-low rounded-xl p-4">
           <div className="flex items-center gap-2 mb-3">
@@ -264,31 +579,40 @@ export default function LogsPage() {
         {/* Log Table */}
         {!isLoading && !isError && (
           <div className="bg-surface-container-low rounded-xl overflow-hidden">
-            <div className="grid grid-cols-[130px_1fr_0.8fr_0.9fr_130px_120px_90px] gap-3 px-5 py-3 text-xs font-technical text-on-surface-variant/60 uppercase tracking-wider border-b border-outline-variant/10">
-              <span>Time</span>
-              <span>User</span>
+            <div className="grid grid-cols-[0.8fr_1fr_0.9fr_120px_120px_110px_75px] gap-3 px-5 py-3 text-xs font-technical text-on-surface-variant/60 uppercase tracking-wider border-b border-outline-variant/10">
               <span>Device</span>
-              <span>Org</span>
+              <span>User</span>
+              <span>Organization</span>
+              <span>Time</span>
               <span>Action</span>
               <span>Target</span>
-              <span>Resource</span>
+              <span>Type</span>
             </div>
 
             {filteredLogs.map((log: any) => {
               const details = typeof log.details === 'object' ? log.details : {};
               const port = details?.port ?? details?.targetPort ?? details?.localPort ?? null;
+              const tunnelType: string = details?.tunnelType ?? '';
 
               return (
                 <div key={log.id}>
                   <button
                     onClick={() => setExpandedLogId((prev) => (prev === log.id ? null : log.id))}
-                    className="grid grid-cols-[130px_1fr_0.8fr_0.9fr_130px_120px_90px] gap-3 px-5 py-3 w-full text-left text-sm hover:bg-surface-container-high transition-colors items-center"
+                    className="grid grid-cols-[0.8fr_1fr_0.9fr_120px_120px_110px_75px] gap-3 px-5 py-3 w-full text-left text-sm hover:bg-surface-container-high transition-colors items-center"
                   >
-                    {/* Time */}
-                    <span className="font-technical text-on-surface-variant text-xs flex items-center gap-1.5">
-                      <Clock className="w-3 h-3 text-on-surface-variant/40 flex-shrink-0" />
-                      {formatTimestamp(log.createdAt)}
-                    </span>
+                    {/* Device */}
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      {(log.deviceName || log.deviceSerial) ? (
+                        <>
+                          <Monitor className="w-3.5 h-3.5 text-on-surface-variant/40 flex-shrink-0" />
+                          <span className="text-on-surface text-xs font-medium truncate">
+                            {(log.deviceName ?? log.deviceSerial ?? '').replace(/^Nucleus\s+/i, '')}
+                          </span>
+                        </>
+                      ) : (
+                        <span className="text-on-surface-variant/30 text-xs">--</span>
+                      )}
+                    </div>
 
                     {/* User */}
                     <div className="flex items-center gap-2 min-w-0">
@@ -307,21 +631,7 @@ export default function LogsPage() {
                       </div>
                     </div>
 
-                    {/* Device */}
-                    <div className="flex items-center gap-1.5 min-w-0">
-                      {(log.deviceName || log.deviceSerial) ? (
-                        <>
-                          <Monitor className="w-3.5 h-3.5 text-on-surface-variant/40 flex-shrink-0" />
-                          <span className="text-on-surface text-xs font-medium truncate">
-                            {(log.deviceName ?? log.deviceSerial ?? '').replace(/^Nucleus\s+/i, '')}
-                          </span>
-                        </>
-                      ) : (
-                        <span className="text-on-surface-variant/30 text-xs">--</span>
-                      )}
-                    </div>
-
-                    {/* Organization (resolved from device → org_devices) */}
+                    {/* Organization */}
                     <div className="flex items-center gap-1 min-w-0 overflow-hidden">
                       {(log.deviceOrgs && log.deviceOrgs.length > 0) ? (
                         <span className="text-on-surface-variant text-[11px] truncate" title={log.deviceOrgs.map((o: any) => o.name).join(', ')}>
@@ -333,6 +643,12 @@ export default function LogsPage() {
                         <span className="text-on-surface-variant/30 text-xs">--</span>
                       )}
                     </div>
+
+                    {/* Time */}
+                    <span className="font-technical text-on-surface-variant text-xs flex items-center gap-1.5">
+                      <Clock className="w-3 h-3 text-on-surface-variant/40 flex-shrink-0" />
+                      {formatTimestamp(log.createdAt)}
+                    </span>
 
                     {/* Action */}
                     <ActionBadge action={log.action} />
@@ -356,9 +672,26 @@ export default function LogsPage() {
                       )}
                     </div>
 
-                    {/* Resource */}
-                    <span className="font-technical text-on-surface-variant text-[11px] truncate">
-                      {log.resourceType ?? '--'}
+                    {/* Type (web / local / export) */}
+                    <span className="flex justify-center">
+                      {tunnelType ? (
+                        <span className={`inline-flex items-center gap-1 text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${
+                          tunnelType === 'browser'
+                            ? 'bg-blue-500/10 text-blue-400'
+                            : tunnelType === 'export'
+                            ? 'bg-emerald-500/10 text-emerald-400'
+                            : tunnelType === 'local'
+                            ? 'bg-violet-500/10 text-violet-400'
+                            : 'bg-surface-container-highest text-on-surface-variant'
+                        }`}>
+                          {tunnelType === 'browser' && <Globe className="w-2.5 h-2.5" />}
+                          {tunnelType === 'export' && <ExternalLink className="w-2.5 h-2.5" />}
+                          {tunnelType === 'local' && <Monitor className="w-2.5 h-2.5" />}
+                          {tunnelType === 'browser' ? 'Web' : tunnelType}
+                        </span>
+                      ) : (
+                        <span className="text-on-surface-variant/30 text-[10px]">--</span>
+                      )}
                     </span>
                   </button>
 
@@ -456,7 +789,6 @@ export default function LogsPage() {
             </div>
           </div>
         )}
-      </div>
     </div>
   );
 }

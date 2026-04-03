@@ -1,3 +1,4 @@
+use crate::arp_discovery::{arp_sweep, mac_vendor};
 use nucleus_common::messages::{AgentToServer, NetworkScanPayload, ScannedHost, ScannedPort};
 use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
@@ -13,17 +14,24 @@ fn port_to_service(port: u16) -> Option<&'static str> {
         22 => Some("SSH"),
         23 => Some("Telnet"),
         80 => Some("HTTP"),
+        102 => Some("S7comm"),
+        161 => Some("SNMP"),
         443 => Some("HTTPS"),
         502 => Some("Modbus TCP"),
         1880 => Some("Node-RED"),
+        1883 => Some("MQTT"),
         2202 => Some("mbusd"),
+        2222 => Some("EtherNet/IP-config"),
+        2404 => Some("IEC 60870-5-104"),
         3389 => Some("RDP"),
+        4000 => Some("Remote-IO"),
         4840 => Some("OPC UA"),
         5900 => Some("VNC"),
         8080 => Some("HTTP-Alt"),
         9090 => Some("Cockpit"),
         9999 => Some("Custom"),
         10002 => Some("Serial-TCP"),
+        20000 => Some("DNP3"),
         44818 => Some("EtherNet/IP"),
         47808 => Some("BACnet"),
         _ => None,
@@ -34,19 +42,24 @@ fn port_to_service(port: u16) -> Option<&'static str> {
 fn get_ports(scan_type: &str) -> Vec<u16> {
     match scan_type {
         "quick" => vec![22, 80, 443, 502, 1880, 9090],
-        "standard" => vec![21, 22, 23, 80, 81, 443, 502, 1880, 2202, 2404, 3389, 5900, 8080, 8443, 9090, 9999, 10002, 44818],
+        "standard" => vec![
+            21, 22, 23, 80, 81, 102, 443, 502, 1880, 1883,
+            2202, 2404, 3389, 4840, 5900, 8080, 8443, 9090,
+            9999, 10002, 44818, 47808,
+        ],
         "deep" => vec![
-            21, 22, 23, 25, 53, 80, 81, 110, 143, 443, 502, 993, 995,
-            1433, 1521, 1880, 2202, 2404, 3306, 3389, 4840, 5020, 5432,
-            5900, 6379, 8000, 8080, 8081, 8443, 8888, 9090, 9999, 10002,
-            10502, 27017, 44818, 47808,
+            21, 22, 23, 25, 53, 80, 81, 102, 110, 143, 161, 443, 502,
+            993, 995, 1433, 1521, 1880, 1883, 2202, 2222, 2404, 3000,
+            3306, 3389, 4000, 4840, 5020, 5432, 5900, 6379, 8000, 8080,
+            8081, 8443, 8888, 9090, 9999, 10002, 10502, 20000, 27017,
+            44818, 47808,
         ],
         _ => vec![22, 80, 443, 502, 1880, 9090],
     }
 }
 
-/// Calculate IP range from IP + subnet mask
-fn ip_range(ip: &str, mask: &str) -> Vec<String> {
+/// Calculate IPv4 range from IP + subnet mask (excludes own IP)
+fn ip_range_v4(ip: &str, mask: &str) -> Vec<Ipv4Addr> {
     let ip: Ipv4Addr = match ip.parse() {
         Ok(ip) => ip,
         Err(_) => return vec![],
@@ -62,17 +75,16 @@ fn ip_range(ip: &str, mask: &str) -> Vec<String> {
     let broadcast = network | !mask_u32;
     let host_count = broadcast - network;
 
-    // Limit to /24 or smaller (max 254 hosts)
-    if host_count > 254 || host_count == 0 {
+    // Limit to /22 or smaller (max ~1022 hosts)
+    if host_count > 1023 || host_count == 0 {
         return vec![];
     }
 
     let mut ips = Vec::new();
     for i in 1..host_count {
         let host_ip = Ipv4Addr::from(network + i);
-        // Skip our own IP
         if host_ip != ip {
-            ips.push(host_ip.to_string());
+            ips.push(host_ip);
         }
     }
     ips
@@ -87,11 +99,9 @@ async fn probe_port(ip: &str, port: u16, timeout: Duration) -> bool {
         .unwrap_or(false)
 }
 
-/// Scan a single host for open ports
-async fn scan_host(ip: String, ports: &[u16], timeout: Duration) -> Option<ScannedHost> {
-    let start = Instant::now();
+/// Scan a single host for open ports (returns host even if 0 ports found when from ARP)
+async fn scan_host_ports(ip: String, ports: &[u16], timeout: Duration) -> Vec<ScannedPort> {
     let mut open_ports = Vec::new();
-
     for &port in ports {
         if probe_port(&ip, port, timeout).await {
             open_ports.push(ScannedPort {
@@ -101,21 +111,12 @@ async fn scan_host(ip: String, ports: &[u16], timeout: Duration) -> Option<Scann
             });
         }
     }
-
-    if open_ports.is_empty() {
-        return None;
-    }
-
-    let latency = start.elapsed().as_millis() as u32 / open_ports.len().max(1) as u32;
-
-    Some(ScannedHost {
-        ip,
-        ports: open_ports,
-        latency_ms: Some(latency),
-    })
+    open_ports
 }
 
-/// Run a network scan on the adapter's subnet + always include localhost
+/// Run a two-phase network scan:
+///   Phase 1: ARP sweep to discover live hosts (works even if all TCP ports are closed)
+///   Phase 2: TCP port scan only on discovered hosts
 pub fn run_scan(
     tx: mpsc::UnboundedSender<Message>,
     adapter_name: String,
@@ -126,8 +127,8 @@ pub fn run_scan(
     tokio::spawn(async move {
         let scan_type = payload.scan_type.as_deref().unwrap_or("standard");
         let ports = payload.ports.unwrap_or_else(|| get_ports(scan_type));
-        let timeout = Duration::from_millis(payload.timeout_ms.unwrap_or(1000));
-        let concurrency = payload.concurrency.unwrap_or(20) as usize;
+        let timeout = Duration::from_millis(payload.timeout_ms.unwrap_or(3000));
+        let concurrency = payload.concurrency.unwrap_or(50) as usize;
 
         info!(
             adapter = %adapter_name,
@@ -135,29 +136,62 @@ pub fn run_scan(
             mask = %subnet_mask,
             scan_type = scan_type,
             ports = ports.len(),
-            "Starting network scan"
+            "Starting two-phase subnet scan (ARP + TCP)"
         );
 
         let start = Instant::now();
-        let mut hosts: Vec<ScannedHost> = Vec::new();
 
-        // Always scan localhost first (local services: SSH, Node-RED, Cockpit, etc.)
-        if let Some(localhost) = scan_host("127.0.0.1".to_string(), &ports, timeout).await {
-            info!(services = localhost.ports.len(), "Localhost scan found {} services", localhost.ports.len());
-            hosts.push(localhost);
+        // Calculate target IPs (excludes our own)
+        let target_ips = ip_range_v4(&adapter_ip, &subnet_mask);
+        if target_ips.is_empty() {
+            warn!(adapter = %adapter_name, "No target IPs in subnet range");
+            let _ = send_json(&tx, &AgentToServer::NetworkScanError {
+                adapter_name,
+                error: "No valid IPs in subnet".to_string(),
+            });
+            return;
         }
 
-        // Then scan the subnet if we have a valid IP range
-        let ips = ip_range(&adapter_ip, &subnet_mask);
-        if !ips.is_empty() {
-            info!(adapter = %adapter_name, hosts = ips.len(), "Scanning {} hosts", ips.len());
-            for chunk in ips.chunks(concurrency) {
+        // ── Phase 1: ARP Discovery ──
+        // Run ARP sweep in a blocking thread (pnet uses synchronous I/O)
+        let arp_adapter = adapter_name.clone();
+        let arp_ip: Ipv4Addr = adapter_ip.parse().unwrap();
+        let arp_targets = target_ips.clone();
+        let arp_hosts = tokio::task::spawn_blocking(move || {
+            arp_sweep(&arp_adapter, arp_ip, &arp_targets, Duration::from_secs(4))
+        }).await.unwrap_or_default();
+
+        info!(
+            adapter = %adapter_name,
+            arp_hosts = arp_hosts.len(),
+            arp_duration_ms = start.elapsed().as_millis(),
+            "Phase 1 (ARP) complete — {} live hosts found",
+            arp_hosts.len()
+        );
+
+        // ── Phase 2: TCP Port Scan on discovered hosts ──
+        let mut hosts: Vec<ScannedHost> = Vec::new();
+
+        if arp_hosts.is_empty() {
+            // Fallback: if ARP finds nothing (interface issue?), try TCP on all IPs
+            warn!(adapter = %adapter_name, "ARP found no hosts — falling back to TCP-only scan");
+            let ip_strings: Vec<String> = target_ips.iter().map(|ip| ip.to_string()).collect();
+            for chunk in ip_strings.chunks(concurrency) {
                 let mut tasks = Vec::new();
                 for ip in chunk {
                     let ip = ip.clone();
                     let ports_owned = ports.clone();
                     tasks.push(tokio::spawn(async move {
-                        scan_host(ip, &ports_owned, timeout).await
+                        let open = scan_host_ports(ip.clone(), &ports_owned, timeout).await;
+                        if open.is_empty() { None } else {
+                            Some(ScannedHost {
+                                ip,
+                                mac: None,
+                                vendor: None,
+                                ports: open,
+                                latency_ms: None,
+                            })
+                        }
                     }));
                 }
                 for task in tasks {
@@ -166,10 +200,38 @@ pub fn run_scan(
                     }
                 }
             }
+        } else {
+            // Port-scan only ARP-discovered hosts (much faster!)
+            info!(adapter = %adapter_name, "Phase 2: TCP port scan on {} ARP-discovered hosts", arp_hosts.len());
+            let mut tasks = Vec::new();
+            for arp_host in &arp_hosts {
+                let ip = arp_host.ip.to_string();
+                let mac_str = format!("{}", arp_host.mac);
+                let vendor = mac_vendor(&arp_host.mac).map(|s| s.to_string());
+                let arp_latency = arp_host.latency_ms;
+                let ports_owned = ports.clone();
+                tasks.push(tokio::spawn(async move {
+                    let open = scan_host_ports(ip.clone(), &ports_owned, timeout).await;
+                    ScannedHost {
+                        ip,
+                        mac: Some(mac_str),
+                        vendor,
+                        ports: open,
+                        latency_ms: Some(arp_latency),
+                    }
+                }));
+            }
+            for task in tasks {
+                if let Ok(host) = task.await {
+                    hosts.push(host);
+                }
+            }
         }
 
+        let duration = start.elapsed().as_millis() as u64;
+
         if hosts.is_empty() {
-            warn!(adapter = %adapter_name, "No hosts found (no localhost services and no subnet hosts)");
+            warn!(adapter = %adapter_name, duration_ms = duration, "No hosts found after ARP + TCP scan");
             let _ = send_json(&tx, &AgentToServer::NetworkScanError {
                 adapter_name,
                 error: "No hosts found".to_string(),
@@ -177,12 +239,12 @@ pub fn run_scan(
             return;
         }
 
-        let duration = start.elapsed().as_millis() as u64;
         info!(
             adapter = %adapter_name,
             hosts_found = hosts.len(),
+            hosts_with_ports = hosts.iter().filter(|h| !h.ports.is_empty()).count(),
             duration_ms = duration,
-            "Scan complete"
+            "Two-phase scan complete"
         );
 
         let _ = send_json(&tx, &AgentToServer::NetworkScanResult {
@@ -208,9 +270,16 @@ pub fn run_localhost_scan(
         let start = Instant::now();
         let mut hosts: Vec<ScannedHost> = Vec::new();
 
-        if let Some(localhost) = scan_host("127.0.0.1".to_string(), &ports, timeout).await {
-            info!(services = localhost.ports.len(), "Localhost: {} services found", localhost.ports.len());
-            hosts.push(localhost);
+        let open = scan_host_ports("127.0.0.1".to_string(), &ports, timeout).await;
+        if !open.is_empty() {
+            info!(services = open.len(), "Localhost: {} services found", open.len());
+            hosts.push(ScannedHost {
+                ip: "127.0.0.1".to_string(),
+                mac: None,
+                vendor: None,
+                ports: open,
+                latency_ms: Some(0),
+            });
         }
 
         let duration = start.elapsed().as_millis() as u64;

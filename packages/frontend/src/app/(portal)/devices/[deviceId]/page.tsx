@@ -461,8 +461,9 @@ function buildPortRows(endpoints: Endpoint[], adapters: Adapter[]): PortRow[] {
     // Determine address mode from adapter
     const addrMode = deriveAddressMode(adapter?.mode ?? null, adapterName, adapterIp);
 
-    // Detect if endpoint is the device itself (localhost)
-    const isLocal = adapterIp !== null && ep.ipAddress === adapterIp || ep.ipAddress === '127.0.0.1' || ep.ipAddress === 'localhost';
+    // Detect if endpoint is truly localhost (127.0.0.1 only)
+    // Self-IPs (adapter's own IP like 10.10.8.1) should show the real IP, not "Localhost"
+    const isLocal = ep.ipAddress === '127.0.0.1' || ep.ipAddress === 'localhost';
 
     // Normalize 'localhost' to '127.0.0.1' so Zod .ip() validation passes
     const normalizedIp = ep.ipAddress === 'localhost' ? '127.0.0.1' : ep.ipAddress;
@@ -667,12 +668,10 @@ function WebPortRow({
           <div className="w-40 flex-shrink-0">
             <p className="text-[9px] text-on-surface-variant/35 font-bold uppercase tracking-wider mb-1">Target (IP)</p>
             <div className="flex items-center gap-1.5">
-              {isLocalhost ? (
-                <span className="font-technical text-sm text-tertiary font-medium">Localhost</span>
-              ) : (
-                <span className="font-technical text-sm text-on-surface font-medium">{targetIp}</span>
-              )}
-              {hostname && !isLocalhost && (
+              <span className={`font-technical text-sm font-medium ${isLocalhost ? 'text-tertiary' : 'text-on-surface'}`}>
+                {isLocalhost ? 'Localhost' : targetIp}
+              </span>
+              {hostname && (
                 <span className="text-[9px] text-on-surface-variant/30 truncate max-w-[80px]">{hostname}</span>
               )}
             </div>
@@ -855,12 +854,10 @@ function ProgramPortRow({
           <div className="w-36 flex-shrink-0">
             <p className="text-[9px] text-on-surface-variant/35 font-bold uppercase tracking-wider mb-0.5">Target (IP)</p>
             <div className="flex items-center gap-1.5">
-              {isLocalhost ? (
-                <span className="font-technical text-xs text-tertiary font-medium">Localhost</span>
-              ) : (
-                <span className="font-technical text-xs text-on-surface font-medium">{targetIp}</span>
-              )}
-              {hostname && !isLocalhost && (
+              <span className={`font-technical text-xs font-medium ${isLocalhost ? 'text-tertiary' : 'text-on-surface'}`}>
+                {displayIp}
+              </span>
+              {hostname && (
                 <span className="text-[9px] text-on-surface-variant/30 truncate max-w-[80px]">{hostname}</span>
               )}
             </div>
