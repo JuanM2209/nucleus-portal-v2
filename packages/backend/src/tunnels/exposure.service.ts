@@ -56,6 +56,7 @@ export class ExposureService {
       .where(
         and(
           eq(exposures.deviceId, deviceId),
+          eq(exposures.targetIp, targetIp),
           eq(exposures.targetPort, targetPort),
           inArray(exposures.status, ['active', 'idle', 'pending']),
         ),
@@ -326,12 +327,15 @@ export class ExposureService {
   /**
    * Get active exposure for a device+port.
    */
-  async getActiveExposure(deviceId: string, targetPort: number, tenantId?: string): Promise<any | null> {
+  async getActiveExposure(deviceId: string, targetPort: number, tenantId?: string, targetIp?: string): Promise<any | null> {
     const conditions = [
       eq(exposures.deviceId, deviceId),
       eq(exposures.targetPort, targetPort),
       inArray(exposures.status, ['active', 'idle']),
     ];
+    if (targetIp) {
+      conditions.push(eq(exposures.targetIp, targetIp));
+    }
     if (tenantId) {
       conditions.push(eq(exposures.tenantId, tenantId));
     }

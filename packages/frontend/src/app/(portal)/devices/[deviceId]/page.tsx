@@ -684,7 +684,7 @@ function WebPortRow({
 
   // Check if exposure already exists for this device+port
   useEffect(() => {
-    api.get<{ success: boolean; data: any }>(`/sessions/exposure?deviceId=${deviceId}&port=${service.port}`)
+    api.get<{ success: boolean; data: any }>(`/sessions/exposure?deviceId=${deviceId}&port=${service.port}&targetIp=${encodeURIComponent(targetIp)}`)
       .then(res => {
         if (res.data) setExposure(res.data);
       })
@@ -693,20 +693,28 @@ function WebPortRow({
 
   const handleOpen = useCallback(async () => {
     setLoading(true);
+    // Open window synchronously (before await) to avoid popup blocker
+    const newTab = window.open('about:blank', '_blank');
     try {
-      // Expose port via chisel tunnel and open directly in browser
-      const body = targetIp !== '127.0.0.1' && targetIp !== 'localhost' ? { targetIp } : undefined;
-      const res = await api.post<{ success: boolean; data: any }>(
-        `/devices/${deviceId}/ports/${service.port}/expose`, body,
-      );
-      if (res.data?.remotePort) {
-        const rPort = res.data.remotePort;
-        const tlsPorts = [443, 8443, 9090, 9443];
-        const protocol = tlsPorts.includes(service.port) ? 'https' : 'http';
-        window.open(`${protocol}://localhost:${rPort}/`, '_blank');
+      const ip = targetIp !== '127.0.0.1' && targetIp !== 'localhost' ? targetIp : '127.0.0.1';
+      const res = await api.post<{ success: boolean; data: any }>('/sessions', {
+        deviceId,
+        targetIp: ip,
+        targetPort: service.port,
+        tunnelType: 'browser',
+        durationMinutes: 480,
+      });
+      if (res.data?.proxyUrl && newTab) {
+        newTab.location.href = res.data.proxyUrl;
+      } else if (res.data?.proxyUrl) {
+        window.open(res.data.proxyUrl, '_blank');
+      } else {
+        newTab?.close();
+        alert('Failed to create session');
       }
     } catch (err: any) {
-      alert(`Failed to expose port: ${err.message}`);
+      newTab?.close();
+      alert(`Failed to open session: ${err.message}`);
     } finally {
       setLoading(false);
     }

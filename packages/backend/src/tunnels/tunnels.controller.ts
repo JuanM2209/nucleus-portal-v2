@@ -88,11 +88,12 @@ export class TunnelsController {
     @CurrentUser('tenantId') tenantId: string,
     @Query('deviceId') deviceId: string,
     @Query('port') port: string,
+    @Query('targetIp') targetIp?: string,
   ) {
     if (!deviceId || !port) {
       return errorResponse('deviceId and port are required');
     }
-    const exposure = await this.exposureService.getActiveExposure(deviceId, parseInt(port, 10), tenantId);
+    const exposure = await this.exposureService.getActiveExposure(deviceId, parseInt(port, 10), tenantId, targetIp);
     return successResponse(exposure);
   }
 
