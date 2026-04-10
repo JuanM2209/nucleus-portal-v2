@@ -23,6 +23,10 @@ export class SettingsService {
         theme: 'system',
         sessionDurationHours: 8,
         notificationsEnabled: true,
+        sessionExpiryAlerts: true,
+        deviceOfflineAlerts: false,
+        healthCheckAlerts: false,
+        agentUpdateAlerts: false,
         timezone: 'UTC',
       };
     }
@@ -36,6 +40,10 @@ export class SettingsService {
       theme?: string;
       sessionDurationHours?: number;
       notificationsEnabled?: boolean;
+      sessionExpiryAlerts?: boolean;
+      deviceOfflineAlerts?: boolean;
+      healthCheckAlerts?: boolean;
+      agentUpdateAlerts?: boolean;
       timezone?: string;
     },
   ) {
@@ -44,6 +52,10 @@ export class SettingsService {
     if (data.theme !== undefined) values.theme = data.theme;
     if (data.sessionDurationHours !== undefined) values.sessionDurationHours = data.sessionDurationHours;
     if (data.notificationsEnabled !== undefined) values.notificationsEnabled = data.notificationsEnabled;
+    if (data.sessionExpiryAlerts !== undefined) values.sessionExpiryAlerts = data.sessionExpiryAlerts;
+    if (data.deviceOfflineAlerts !== undefined) values.deviceOfflineAlerts = data.deviceOfflineAlerts;
+    if (data.healthCheckAlerts !== undefined) values.healthCheckAlerts = data.healthCheckAlerts;
+    if (data.agentUpdateAlerts !== undefined) values.agentUpdateAlerts = data.agentUpdateAlerts;
     if (data.timezone !== undefined) values.timezone = data.timezone;
 
     const [prefs] = await this.db

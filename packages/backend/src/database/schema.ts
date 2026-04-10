@@ -301,7 +301,25 @@ export const userPreferences = pgTable('user_preferences', {
   theme: varchar('theme', { length: 20 }).notNull().default('system'),
   sessionDurationHours: integer('session_duration_hours').notNull().default(8),
   notificationsEnabled: boolean('notifications_enabled').notNull().default(true),
+  sessionExpiryAlerts: boolean('session_expiry_alerts').notNull().default(true),
+  deviceOfflineAlerts: boolean('device_offline_alerts').notNull().default(false),
+  healthCheckAlerts: boolean('health_check_alerts').notNull().default(false),
+  agentUpdateAlerts: boolean('agent_update_alerts').notNull().default(false),
   timezone: varchar('timezone', { length: 100 }).notNull().default('UTC'),
+});
+
+// ── User Invitations ──
+
+export const invitations = pgTable('invitations', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.id),
+  email: varchar('email', { length: 255 }).notNull(),
+  role: varchar('role', { length: 50 }).notNull().default('viewer'),
+  token: varchar('token', { length: 128 }).notNull().unique(),
+  invitedBy: uuid('invited_by').notNull().references(() => users.id),
+  acceptedAt: timestamp('accepted_at', { withTimezone: true }),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
 // ── Pending Devices (awaiting approval) ──

@@ -5,6 +5,10 @@ export const UpdatePreferencesDto = z.object({
   timezone: z.string().max(100).optional(),
   sessionDurationHours: z.number().int().min(1).max(24).optional(),
   notificationsEnabled: z.boolean().optional(),
+  sessionExpiryAlerts: z.boolean().optional(),
+  deviceOfflineAlerts: z.boolean().optional(),
+  healthCheckAlerts: z.boolean().optional(),
+  agentUpdateAlerts: z.boolean().optional(),
 });
 
 export const UpdateOrgSettingsDto = z.object({

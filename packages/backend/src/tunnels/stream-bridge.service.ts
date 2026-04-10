@@ -31,6 +31,8 @@ interface QueuedRequest {
   data: Buffer[];
   headersSent: boolean;
   lastActivity: number;
+  /** High-priority requests (API/jsonrpc) jump ahead of static file GETs in the queue */
+  priority: boolean;
 }
 
 interface BridgeEntry {
@@ -166,8 +168,18 @@ export class StreamBridgeService {
   }
 
   /**
+   * Get the PRIMARY bridge port for session-bound requests (POST, API calls).
+   * HTTPS devices (like Emerson Gateway) bind sessions to TLS connections —
+   * all authenticated requests must go through the same bridge that handled login.
+   */
+  getPrimaryBridgePort(sessionId: string): number | null {
+    return this.bridges.get(sessionId)?.port ?? null;
+  }
+
+  /**
    * Get a bridge port for a session. If the session has a pool,
    * round-robin across pool members for load balancing.
+   * Use for static files (GET .js/.css/.png) that don't need session affinity.
    */
   getBridgePort(sessionId: string): number | null {
     // Check if this session has a bridge pool
@@ -766,12 +778,34 @@ export class StreamBridgeService {
       data: [],
       headersSent: false,
       lastActivity: Date.now(),
+      priority: false,
     };
 
     // Buffer incoming data
     socket.on('data', (data: Buffer) => {
       queued.data.push(data);
       queued.lastActivity = Date.now();
+
+      // Detect priority on first data chunk: POST requests and API paths
+      // jump ahead of static file GETs (critical for Emerson Gateway which
+      // makes 36 jsonrpc calls that queue behind 369 static file GETs)
+      if (!queued.priority && queued.data.length === 1) {
+        const head = data.toString('utf8', 0, Math.min(data.length, 512));
+        if (head.startsWith('POST ') || /\/(api|jsonrpc|json-rpc)/i.test(head)) {
+          queued.priority = true;
+          // Re-position in queue: move ahead of non-priority items
+          const idx = bridge.requestQueue.indexOf(queued);
+          if (idx > 0) {
+            bridge.requestQueue.splice(idx, 1);
+            const insertAt = bridge.requestQueue.findIndex(r => !r.priority);
+            if (insertAt >= 0) {
+              bridge.requestQueue.splice(insertAt, 0, queued);
+            } else {
+              bridge.requestQueue.push(queued);
+            }
+          }
+        }
+      }
 
       // For persistent bridges: if no active request, start a new tcp_stream cycle.
       // This happens after tcp_stream_closed cleaned up the previous active request.
@@ -836,8 +870,17 @@ export class StreamBridgeService {
       this.streamToSession.delete(streamId);
     });
 
-    // Add to queue and start processing
-    bridge.requestQueue.push(queued);
+    // Priority insertion: API/POST requests go before static file GETs
+    if (queued.priority) {
+      const insertAt = bridge.requestQueue.findIndex(r => !r.priority);
+      if (insertAt >= 0) {
+        bridge.requestQueue.splice(insertAt, 0, queued);
+      } else {
+        bridge.requestQueue.push(queued);
+      }
+    } else {
+      bridge.requestQueue.push(queued);
+    }
     this.processNextRequest(bridge);
   }
 

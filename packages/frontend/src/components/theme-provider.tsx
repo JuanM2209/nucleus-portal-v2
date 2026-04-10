@@ -10,6 +10,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     const root = document.documentElement;
     root.classList.remove('dark', 'light');
     root.classList.add(theme);
+    root.style.colorScheme = theme;
   }, [theme]);
 
   return <>{children}</>;

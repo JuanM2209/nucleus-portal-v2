@@ -43,3 +43,8 @@ agent/nucleus-common/target/
 # Rathole binaries (downloaded at install time)
 infra/rathole/rathole.exe
 infra/rathole/rathole
+
+.claude-orchestrator/logs/
+.claude-orchestrator/tasks/
+.claude-orchestrator/.prompt-*
+.claude-orchestrator/messages/

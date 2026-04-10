@@ -102,3 +102,37 @@ export function useRemoveDeviceFromOrg() {
     },
   });
 }
+
+// ── User Registration (Admin only) ──
+
+export function useRegisterUser() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { email: string; password: string; displayName?: string; role?: string }) =>
+      api.post('/auth/register', data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['organizations'] });
+    },
+  });
+}
+
+// ── Invitations ──
+
+export function useInviteUser() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { email: string; role: string }) =>
+      api.post('/auth/invite', data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['invitations'] });
+      qc.invalidateQueries({ queryKey: ['organizations'] });
+    },
+  });
+}
+
+export function usePendingInvitations() {
+  return useQuery({
+    queryKey: ['invitations'],
+    queryFn: () => api.get<any>('/auth/invitations'),
+  });
+}

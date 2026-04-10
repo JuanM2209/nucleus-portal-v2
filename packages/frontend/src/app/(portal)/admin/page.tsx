@@ -1,7 +1,9 @@
 'use client';
 
 import { useMemo } from 'react';
+import { useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
+import { useAuthStore } from '@/stores/auth-store';
 import { formatUptime } from '@/lib/format';
 import {
   Activity,
@@ -141,8 +143,34 @@ const SESSION_BREAKDOWN = {
    ═══════════════════════════════════════════════════════════════ */
 
 export default function AdminPage() {
+  const router = useRouter();
+  const userRoles = useAuthStore((s) => s.user?.roles ?? []);
+  const isAdmin = userRoles.includes('admin');
   const { data: metrics, isLoading, isError } = useAdminMetrics();
   const trafficData = useMemo(() => generateTrafficData(), []);
+
+  if (!isAdmin) {
+    return (
+      <div className="min-h-full flex items-center justify-center pb-12">
+        <div className="text-center space-y-4">
+          <div className="mx-auto w-16 h-16 rounded-full bg-error/10 flex items-center justify-center">
+            <Shield className="w-8 h-8 text-error" />
+          </div>
+          <h1 className="font-headline text-2xl font-bold text-on-surface">Access Denied</h1>
+          <p className="text-sm text-on-surface-variant max-w-md">
+            The Admin Overview is restricted to users with the Admin role.
+            Contact your administrator for access.
+          </p>
+          <button
+            onClick={() => router.push('/dashboard')}
+            className="mt-4 px-6 py-2.5 rounded-xl bg-primary/10 text-primary text-sm font-bold hover:bg-primary/20 transition-colors"
+          >
+            Go to Dashboard
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-full pb-12">

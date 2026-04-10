@@ -6,29 +6,137 @@
 @tailwind utilities;
 
 @layer base {
-  html {
+  /* ── Dark Theme (default) ── RGB channels for Tailwind opacity support */
+  html.dark {
     color-scheme: dark;
+    --surface-container-low: 19 27 46;
+    --primary-fixed-dim: 173 198 255;
+    --surface-bright: 49 57 77;
+    --on-primary: 0 46 106;
+    --surface-variant: 45 52 73;
+    --primary-fixed: 216 226 255;
+    --on-surface: 218 226 253;
+    --secondary: 188 199 222;
+    --surface-dim: 11 19 38;
+    --on-background: 218 226 253;
+    --outline: 140 144 159;
+    --on-primary-fixed: 0 26 66;
+    --on-primary-container: 0 40 93;
+    --background: 11 19 38;
+    --inverse-on-surface: 40 48 68;
+    --primary-container: 77 142 255;
+    --on-secondary: 38 49 67;
+    --surface-container-lowest: 6 14 32;
+    --secondary-fixed-dim: 188 199 222;
+    --secondary-fixed: 216 227 251;
+    --tertiary-fixed: 111 251 190;
+    --on-secondary-fixed-variant: 60 71 90;
+    --primary: 173 198 255;
+    --tertiary: 78 222 163;
+    --on-tertiary-container: 0 49 31;
+    --surface: 11 19 38;
+    --inverse-primary: 0 90 194;
+    --on-surface-variant: 194 198 214;
+    --tertiary-container: 0 165 114;
+    --on-error-container: 255 218 214;
+    --on-tertiary-fixed: 0 33 19;
+    --on-error: 105 0 5;
+    --on-primary-fixed-variant: 0 67 149;
+    --on-tertiary-fixed-variant: 0 82 54;
+    --surface-container-high: 34 42 61;
+    --surface-container: 23 31 51;
+    --error: 255 180 171;
+    --tertiary-fixed-dim: 78 222 163;
+    --surface-container-highest: 45 52 73;
+    --error-container: 147 0 10;
+    --surface-tint: 173 198 255;
+    --on-secondary-fixed: 17 28 45;
+    --outline-variant: 66 71 84;
+    --on-tertiary: 0 56 36;
+    --secondary-container: 62 73 93;
+    --on-secondary-container: 174 185 208;
+    --inverse-surface: 218 226 253;
   }
+
+  /* ── Light Theme ── */
+  html.light {
+    color-scheme: light;
+    --surface-container-low: 243 243 248;
+    --primary-fixed-dim: 173 198 255;
+    --surface-bright: 249 249 255;
+    --on-primary: 255 255 255;
+    --surface-variant: 224 226 236;
+    --primary-fixed: 216 226 255;
+    --on-surface: 26 28 34;
+    --secondary: 86 94 113;
+    --surface-dim: 217 217 224;
+    --on-background: 26 28 34;
+    --outline: 117 119 128;
+    --on-primary-fixed: 0 26 66;
+    --on-primary-container: 0 40 93;
+    --background: 249 249 255;
+    --inverse-on-surface: 240 240 247;
+    --primary-container: 216 226 255;
+    --on-secondary: 255 255 255;
+    --surface-container-lowest: 255 255 255;
+    --secondary-fixed-dim: 188 199 222;
+    --secondary-fixed: 216 227 251;
+    --tertiary-fixed: 111 251 190;
+    --on-secondary-fixed-variant: 60 71 90;
+    --primary: 53 102 165;
+    --tertiary: 0 108 74;
+    --on-tertiary-container: 0 49 31;
+    --surface: 249 249 255;
+    --inverse-primary: 173 198 255;
+    --on-surface-variant: 68 70 79;
+    --tertiary-container: 137 248 199;
+    --on-error-container: 65 0 2;
+    --on-tertiary-fixed: 0 33 19;
+    --on-error: 255 255 255;
+    --on-primary-fixed-variant: 0 67 149;
+    --on-tertiary-fixed-variant: 0 82 54;
+    --surface-container-high: 231 232 238;
+    --surface-container: 237 237 244;
+    --error: 186 26 26;
+    --tertiary-fixed-dim: 78 222 163;
+    --surface-container-highest: 225 226 233;
+    --error-container: 255 218 214;
+    --surface-tint: 53 102 165;
+    --on-secondary-fixed: 17 28 45;
+    --outline-variant: 196 198 208;
+    --on-tertiary: 255 255 255;
+    --secondary-container: 216 227 251;
+    --on-secondary-container: 19 28 44;
+    --inverse-surface: 47 48 56;
+  }
+
   body {
-    @apply bg-background text-on-surface font-body;
+    background-color: rgb(var(--background));
+    color: rgb(var(--on-surface));
+    font-family: 'Inter', system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
   ::selection {
-    @apply bg-primary/30;
+    background-color: rgb(var(--primary) / 0.3);
   }
 }
 
 @layer components {
   .glass-panel {
-    background: rgba(45, 52, 73, 0.15);
     backdrop-filter: blur(12px);
   }
+  .dark .glass-panel {
+    background: rgba(45, 52, 73, 0.15);
+  }
+  .light .glass-panel {
+    background: rgba(255, 255, 255, 0.7);
+  }
   .gradient-button {
-    background: linear-gradient(135deg, #adc6ff 0%, #4d8eff 100%);
+    background: linear-gradient(135deg, rgb(var(--primary)) 0%, rgb(var(--primary-container)) 100%);
   }
   .gradient-button:hover {
-    background: linear-gradient(135deg, #c2d5ff 0%, #6ba0ff 100%);
+    filter: brightness(1.1);
   }
   .network-grid {
     background-image: radial-gradient(circle at 2px 2px, rgba(173, 198, 255, 0.05) 1px, transparent 0);

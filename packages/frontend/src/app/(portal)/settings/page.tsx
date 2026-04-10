@@ -28,6 +28,9 @@ import {
   Trash2,
   RotateCcw,
   Radar,
+  Copy,
+  Check,
+  Mail,
 } from 'lucide-react';
 import {
   useOrganizations,
@@ -40,6 +43,9 @@ import {
   useRemoveDeviceFromOrg,
   useAddOrgMember,
   useRemoveOrgMember,
+  useRegisterUser,
+  useInviteUser,
+  usePendingInvitations,
 } from '@/hooks/use-admin';
 import { useDevices } from '@/hooks/use-device';
 import {
@@ -191,7 +197,7 @@ function GeneralTab() {
 
   const [displayName, setDisplayName] = useState(user?.displayName ?? '');
   const [emailNotifications, setEmailNotifications] = useState(() => prefs.notificationsEnabled ?? true);
-  const [sessionExpiryAlerts, setSessionExpiryAlerts] = useState(true);
+  const [sessionExpiryAlerts, setSessionExpiryAlerts] = useState(() => prefs.sessionExpiryAlerts ?? true);
   const [timezone, setTimezone] = useState(() => prefs.timezone ?? 'UTC');
   const [saveSuccess, setSaveSuccess] = useState(false);
 
@@ -199,7 +205,8 @@ function GeneralTab() {
   useEffect(() => {
     if (prefs.timezone) setTimezone(prefs.timezone);
     if (prefs.notificationsEnabled !== undefined) setEmailNotifications(prefs.notificationsEnabled);
-  }, [prefs.timezone, prefs.notificationsEnabled]);
+    if (prefs.sessionExpiryAlerts !== undefined) setSessionExpiryAlerts(prefs.sessionExpiryAlerts);
+  }, [prefs.timezone, prefs.notificationsEnabled, prefs.sessionExpiryAlerts]);
 
   function handleSave() {
     updatePrefsMutation.mutate(
@@ -207,6 +214,7 @@ function GeneralTab() {
         theme,
         timezone,
         notificationsEnabled: emailNotifications,
+        sessionExpiryAlerts,
       },
       {
         onSuccess: () => {
@@ -246,14 +254,15 @@ function GeneralTab() {
                 Dark
               </button>
               <button
-                disabled
-                className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium bg-surface-container-highest text-on-surface-variant/40 cursor-not-allowed"
+                onClick={() => setTheme('light')}
+                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium transition-colors ${
+                  theme === 'light'
+                    ? 'bg-primary/20 text-primary'
+                    : 'bg-surface-container-highest text-on-surface-variant hover:bg-surface-container-high'
+                }`}
               >
                 <Sun className="w-4 h-4" />
                 Light
-                <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-[#f59e0b]/15 text-[#f59e0b] ml-1">
-                  SOON
-                </span>
               </button>
             </div>
           </div>
@@ -1177,6 +1186,76 @@ function AddOrgToUserRow({
 function InviteUserForm({ onClose }: { readonly onClose: () => void }) {
   const [email, setEmail] = useState('');
   const [role, setRole] = useState('viewer');
+  const [inviteLink, setInviteLink] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const inviteMutation = useInviteUser();
+
+  function handleSubmit() {
+    if (!email.trim()) return;
+    inviteMutation.mutate(
+      { email: email.trim(), role },
+      {
+        onSuccess: (data: any) => {
+          const token = data?.data?.token;
+          if (token) {
+            const baseUrl = typeof window !== 'undefined' ? window.location.origin : '';
+            setInviteLink(`${baseUrl}/invite/${token}`);
+          }
+        },
+      },
+    );
+  }
+
+  function handleCopy() {
+    if (inviteLink) {
+      navigator.clipboard.writeText(inviteLink);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  }
+
+  if (inviteLink) {
+    return (
+      <div className="bg-surface-container-low rounded-xl p-6 space-y-4">
+        <div className="flex items-center gap-3">
+          <div className="p-2 bg-tertiary/10 rounded-lg">
+            <Mail className="w-5 h-5 text-tertiary" />
+          </div>
+          <h3 className="font-headline font-bold text-on-surface">Invitation Sent</h3>
+        </div>
+
+        <div className="bg-tertiary/5 border border-tertiary/20 rounded-xl p-4 space-y-3">
+          <p className="text-sm text-on-surface">
+            Share this link with <span className="font-bold">{email}</span>:
+          </p>
+          <div className="flex items-center gap-2">
+            <div className="flex-1 bg-surface-container-highest rounded-xl px-4 py-2.5 text-xs text-on-surface font-technical break-all">
+              {inviteLink}
+            </div>
+            <button
+              onClick={handleCopy}
+              className="flex items-center gap-1.5 px-3 py-2.5 rounded-xl bg-primary/10 text-primary text-xs font-bold hover:bg-primary/20 transition-colors shrink-0"
+            >
+              {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+              {copied ? 'Copied!' : 'Copy'}
+            </button>
+          </div>
+          <p className="text-xs text-on-surface-variant">
+            The user will create their own username and password. Link expires in 7 days.
+          </p>
+        </div>
+
+        <div className="flex justify-end">
+          <button
+            onClick={onClose}
+            className="bg-gradient-to-br from-primary to-primary-container text-on-primary font-bold px-6 py-2 rounded-xl hover:shadow-[0_0_20px_rgba(173,198,255,0.4)] transition-all active:scale-95 text-sm"
+          >
+            Done
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="bg-surface-container-low rounded-xl p-6 space-y-4">
@@ -1189,6 +1268,16 @@ function InviteUserForm({ onClose }: { readonly onClose: () => void }) {
           <X className="w-4 h-4 text-on-surface-variant" />
         </button>
       </div>
+
+      {inviteMutation.isError && (
+        <div className="bg-error/5 border border-error/20 rounded-xl p-3 text-sm text-error">
+          {(inviteMutation.error as Error)?.message ?? 'Failed to send invitation'}
+        </div>
+      )}
+
+      <p className="text-xs text-on-surface-variant">
+        The invited user will set their own display name and password when they accept the invitation.
+      </p>
 
       <div className="grid grid-cols-2 gap-4">
         <div>
@@ -1222,8 +1311,13 @@ function InviteUserForm({ onClose }: { readonly onClose: () => void }) {
         >
           Cancel
         </button>
-        <button className="bg-gradient-to-br from-primary to-primary-container text-on-primary font-bold px-6 py-2 rounded-xl hover:shadow-[0_0_20px_rgba(173,198,255,0.4)] transition-all active:scale-95 text-sm">
-          Send Invite
+        <button
+          onClick={handleSubmit}
+          disabled={!email.trim() || inviteMutation.isPending}
+          className="flex items-center gap-2 bg-gradient-to-br from-primary to-primary-container text-on-primary font-bold px-6 py-2 rounded-xl hover:shadow-[0_0_20px_rgba(173,198,255,0.4)] transition-all active:scale-95 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          <Mail className="w-4 h-4" />
+          {inviteMutation.isPending ? 'Sending...' : 'Send Invitation'}
         </button>
       </div>
     </div>
@@ -1785,6 +1879,82 @@ function ScanSettingsSection() {
   );
 }
 
+function DeviceNotificationsSection() {
+  const { data: prefsData } = usePreferences();
+  const updatePrefsMutation = useUpdatePreferences();
+  const prefs = prefsData?.data ?? {};
+
+  const [deviceOffline, setDeviceOffline] = useState(() => prefs.deviceOfflineAlerts ?? false);
+  const [healthCheck, setHealthCheck] = useState(() => prefs.healthCheckAlerts ?? false);
+  const [agentUpdate, setAgentUpdate] = useState(() => prefs.agentUpdateAlerts ?? false);
+  const [saveSuccess, setSaveSuccess] = useState(false);
+
+  useEffect(() => {
+    if (prefs.deviceOfflineAlerts !== undefined) setDeviceOffline(prefs.deviceOfflineAlerts);
+    if (prefs.healthCheckAlerts !== undefined) setHealthCheck(prefs.healthCheckAlerts);
+    if (prefs.agentUpdateAlerts !== undefined) setAgentUpdate(prefs.agentUpdateAlerts);
+  }, [prefs.deviceOfflineAlerts, prefs.healthCheckAlerts, prefs.agentUpdateAlerts]);
+
+  function handleToggle(field: string, value: boolean) {
+    const payload: Record<string, unknown> = { [field]: value };
+    updatePrefsMutation.mutate(payload, {
+      onSuccess: () => {
+        setSaveSuccess(true);
+        setTimeout(() => setSaveSuccess(false), 2000);
+      },
+    });
+  }
+
+  return (
+    <section className="bg-surface-container-low rounded-xl p-6">
+      <div className="flex items-center gap-3 mb-5">
+        <div className="p-2 bg-tertiary/10 rounded-lg">
+          <Bell className="w-5 h-5 text-tertiary" />
+        </div>
+        <h2 className="font-headline font-bold text-on-surface text-lg">Device Notifications</h2>
+        {saveSuccess && (
+          <span className="text-xs text-tertiary font-technical ml-auto">Saved!</span>
+        )}
+      </div>
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm text-on-surface font-medium">Device offline alerts</p>
+            <p className="text-xs text-on-surface-variant">Get notified when a device goes offline</p>
+          </div>
+          <ToggleSwitch
+            checked={deviceOffline}
+            onChange={(v) => { setDeviceOffline(v); handleToggle('deviceOfflineAlerts', v); }}
+          />
+        </div>
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm text-on-surface font-medium">Health check failures</p>
+            <p className="text-xs text-on-surface-variant">Alert when health checks fail repeatedly</p>
+          </div>
+          <ToggleSwitch
+            checked={healthCheck}
+            onChange={(v) => { setHealthCheck(v); handleToggle('healthCheckAlerts', v); }}
+          />
+        </div>
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm text-on-surface font-medium">Agent update available</p>
+            <p className="text-xs text-on-surface-variant">Notify when a new agent version is released</p>
+          </div>
+          <ToggleSwitch
+            checked={agentUpdate}
+            onChange={(v) => { setAgentUpdate(v); handleToggle('agentUpdateAlerts', v); }}
+          />
+        </div>
+        <p className="text-[10px] text-on-surface-variant/50 font-technical">
+          Preferences are saved. Email delivery will be available in a future update.
+        </p>
+      </div>
+    </section>
+  );
+}
+
 function SessionDefaultsSection() {
   const { data: prefsData } = usePreferences();
   const updatePrefsMutation = useUpdatePreferences();
@@ -1923,44 +2093,8 @@ function DevicesSettingsTab() {
       {/* Session Defaults */}
       <SessionDefaultsSection />
 
-      {/* Notifications — BETA */}
-      <section className="bg-surface-container-low rounded-xl p-6">
-        <div className="flex items-center gap-3 mb-5">
-          <div className="p-2 bg-tertiary/10 rounded-lg">
-            <Bell className="w-5 h-5 text-tertiary" />
-          </div>
-          <h2 className="font-headline font-bold text-on-surface text-lg">Device Notifications</h2>
-          <span className="text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-[#f59e0b]/15 text-[#f59e0b]">
-            BETA
-          </span>
-        </div>
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-on-surface font-medium">Device offline alerts</p>
-              <p className="text-xs text-on-surface-variant">Get notified when a device goes offline</p>
-            </div>
-            <div className="opacity-50 cursor-not-allowed"><ToggleSwitch checked={false} onChange={() => {}} /></div>
-          </div>
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-on-surface font-medium">Health check failures</p>
-              <p className="text-xs text-on-surface-variant">Alert when health checks fail repeatedly</p>
-            </div>
-            <div className="opacity-50 cursor-not-allowed"><ToggleSwitch checked={false} onChange={() => {}} /></div>
-          </div>
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-on-surface font-medium">Agent update available</p>
-              <p className="text-xs text-on-surface-variant">Notify when a new agent version is released</p>
-            </div>
-            <div className="opacity-50 cursor-not-allowed"><ToggleSwitch checked={false} onChange={() => {}} /></div>
-          </div>
-          <p className="text-[10px] text-on-surface-variant/50 font-technical">
-            Notification delivery is currently in beta. Email and in-app notifications coming soon.
-          </p>
-        </div>
-      </section>
+      {/* Device Notifications */}
+      <DeviceNotificationsSection />
 
       {/* Device Organization Assignment */}
       <section className="bg-surface-container-low rounded-xl p-6">

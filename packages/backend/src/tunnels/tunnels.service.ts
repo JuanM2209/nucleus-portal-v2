@@ -843,7 +843,7 @@ export class TunnelsService {
     targetIp: string,
     targetPort: number,
   ): Promise<void> {
-    const POOL_SIZE = 6; // Handle burst of ~20 concurrent Cockpit resource requests
+    const POOL_SIZE = 6; // 6 bridges — HTTPS devices bind sessions to TLS connections; more bridges break session affinity
     const poolSessionIds = [primarySessionId]; // Start with primary
 
     for (let i = 0; i < POOL_SIZE; i++) {

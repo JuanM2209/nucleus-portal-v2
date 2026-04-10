@@ -22,6 +22,7 @@ interface NavItem {
   readonly href: string;
   readonly label: string;
   readonly icon: React.ComponentType<{ className?: string }>;
+  readonly adminOnly?: boolean;
 }
 
 const mainNavItems: readonly NavItem[] = [
@@ -29,7 +30,7 @@ const mainNavItems: readonly NavItem[] = [
   { href: '/devices', label: 'Devices', icon: Radar },
   { href: '/sessions', label: 'Sessions', icon: ArrowLeftRight },
   { href: '/logs', label: 'Logs', icon: ScrollText },
-  { href: '/admin', label: 'Admin Overview', icon: BarChart3 },
+  { href: '/admin', label: 'Admin Overview', icon: BarChart3, adminOnly: true },
 ] as const;
 
 const bottomNavItems: readonly NavItem[] = [
@@ -58,6 +59,8 @@ export function MobileMenuButton() {
 export function Sidebar() {
   const pathname = usePathname();
   const logout = useAuthStore((s) => s.logout);
+  const userRoles = useAuthStore((s) => s.user?.roles ?? []);
+  const isAdmin = userRoles.includes('admin');
   const { isOpen, close } = useSidebarStore();
 
   return (
@@ -99,25 +102,27 @@ export function Sidebar() {
 
         {/* Main Navigation */}
         <nav className="flex-1 w-full px-3 space-y-0.5">
-          {mainNavItems.map((item) => {
-            const isActive = pathname.startsWith(item.href);
-            const Icon = item.icon;
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                onClick={close}
-                className={`rounded-xl flex items-center gap-3 h-10 w-full px-3 transition-colors text-sm ${
-                  isActive
-                    ? 'bg-primary-container/10 text-primary font-medium'
-                    : 'text-on-surface-variant/60 hover:text-on-surface hover:bg-surface-container-high'
-                }`}
-              >
-                <Icon className="w-[18px] h-[18px] flex-shrink-0" />
-                <span>{item.label}</span>
-              </Link>
-            );
-          })}
+          {mainNavItems
+            .filter((item) => !item.adminOnly || isAdmin)
+            .map((item) => {
+              const isActive = pathname.startsWith(item.href);
+              const Icon = item.icon;
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  onClick={close}
+                  className={`rounded-xl flex items-center gap-3 h-10 w-full px-3 transition-colors text-sm ${
+                    isActive
+                      ? 'bg-primary-container/10 text-primary font-medium'
+                      : 'text-on-surface-variant/60 hover:text-on-surface hover:bg-surface-container-high'
+                  }`}
+                >
+                  <Icon className="w-[18px] h-[18px] flex-shrink-0" />
+                  <span>{item.label}</span>
+                </Link>
+              );
+            })}
         </nav>
 
         {/* Bottom Navigation */}

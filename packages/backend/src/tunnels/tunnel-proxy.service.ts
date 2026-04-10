@@ -30,11 +30,11 @@ const CACHEABLE_EXTENSIONS = new Set([
   '.woff', '.woff2', '.ttf', '.eot',
 ]);
 
-/** Max cache size in bytes (50MB) */
-const MAX_CACHE_SIZE = 50 * 1024 * 1024;
+/** Max cache size in bytes (100MB — Emerson Gateway loads 405 resources) */
+const MAX_CACHE_SIZE = 100 * 1024 * 1024;
 
-/** Cache TTL in ms (10 minutes) */
-const CACHE_TTL = 10 * 60 * 1000;
+/** Cache TTL in ms (30 minutes — static Dojo.js files rarely change) */
+const CACHE_TTL = 30 * 60 * 1000;
 
 /** Max proxy retries for FIFO bridge contention */
 const MAX_PROXY_RETRIES = 6; // More retries for cellular link with high latency
@@ -98,6 +98,11 @@ Object.defineProperty(C.prototype,a,{get:d.get,set:function(v){d.set.call(this,r
 [HTMLScriptElement,HTMLImageElement,HTMLAudioElement,HTMLVideoElement,HTMLSourceElement,HTMLIFrameElement,HTMLEmbedElement].forEach(function(C){if(C)pa(C,"src");});
 [HTMLLinkElement,HTMLAnchorElement,HTMLAreaElement].forEach(function(C){if(C)pa(C,"href");});
 if(HTMLFormElement)pa(HTMLFormElement,"action");
+var _la=Location.prototype.assign,_lr=Location.prototype.replace;
+Location.prototype.assign=function(u){return _la.call(this,rw(u));};
+Location.prototype.replace=function(u){return _lr.call(this,rw(u));};
+// NOTE: Keepalive removed — POSTing through the primary bridge competes with
+// the SPA's own jsonrpc calls, causing slower loads and earlier session timeouts.
 })();`;
 
 /** Base delay between retries in ms (multiplied by attempt number) */
@@ -295,6 +300,27 @@ p{color:#9e9e9e;margin:1rem 0;line-height:1.6;font-size:0.95rem}
       proxyRes.headers['referrer-policy'] = 'no-referrer';
       proxyRes.headers['x-content-type-options'] = 'nosniff';
 
+      // ── Rewrite Location header for 3xx redirects ──
+      // Handles two cases:
+      // 1. Root-relative: /servlet/home → /proxy/{token}/servlet/home
+      // 2. Absolute URL: http://192.168.8.1/index.html → /proxy/{token}/index.html
+      //    Catches ANY absolute http/https redirect — the device may redirect to its
+      //    own IP (10.10.1.11, 192.168.8.1, etc.) which must be rewritten to proxy path.
+      const redirectSessionId = (req as any).__proxySessionId;
+      if (redirectSessionId && proxyRes.statusCode && proxyRes.statusCode >= 300 && proxyRes.statusCode < 400 && proxyRes.headers['location']) {
+        const loc = proxyRes.headers['location'];
+        const redirectPrefix = `/proxy/${redirectSessionId}`;
+        if (loc.startsWith('/') && !loc.startsWith('//') && !loc.startsWith(redirectPrefix)) {
+          proxyRes.headers['location'] = `${redirectPrefix}${loc}`;
+          this.logger.debug(`Location rewrite (relative): ${loc} → ${proxyRes.headers['location']}`);
+        } else if (/^https?:\/\/[^/]+\//.test(loc)) {
+          // Absolute URL — extract path and prepend proxy prefix
+          const urlPath = loc.replace(/^https?:\/\/[^/]+/, '');
+          proxyRes.headers['location'] = `${redirectPrefix}${urlPath}`;
+          this.logger.debug(`Location rewrite (absolute→proxy): ${loc} → ${proxyRes.headers['location']}`);
+        }
+      }
+
       // ── Rewrite Set-Cookie Path to include /proxy/{token} prefix ──
       // Upstream services (like Cockpit) set cookies with Path=/cockpit.
       // But through our proxy, the browser URL is /proxy/{token}/cockpit/...
@@ -307,15 +333,23 @@ p{color:#9e9e9e;margin:1rem 0;line-height:1.6;font-size:0.95rem}
         const cookies = Array.isArray(proxyRes.headers['set-cookie'])
           ? proxyRes.headers['set-cookie']
           : [proxyRes.headers['set-cookie']];
+        // Only skip "cockpit=deleted" if there's ALSO a valid cockpit cookie
+        // in the same response. When Cockpit sends both (login success), the
+        // deletion marker would override the real cookie. But when Cockpit sends
+        // ONLY "cockpit=deleted" (session expired), we must forward it so the
+        // browser clears the stale cookie.
+        const hasValidCockpitCookie = cookies.some(
+          (c: string) => /^cockpit=/.test(c.trim()) && !/=deleted\b/.test(c.split(';')[0]),
+        );
         proxyRes.headers['set-cookie'] = cookies
           .filter((cookie: string) => {
-            // Skip "deleted" cookie headers — Cockpit sends "cockpit=deleted"
-            // to clear old sessions. If we rewrite its Path, the browser keeps
-            // both the deletion marker AND the real cookie under the same path,
-            // sending "cockpit=deleted" first which causes Cockpit to return 403.
             if (/=deleted\b/.test(cookie.split(';')[0])) {
-              this.logger.debug(`Set-Cookie SKIP deletion: ${cookie.substring(0, 50)}`);
-              return false;
+              if (hasValidCockpitCookie) {
+                this.logger.debug(`Set-Cookie SKIP deletion (valid cookie present): ${cookie.substring(0, 50)}`);
+                return false;
+              }
+              this.logger.debug(`Set-Cookie FORWARD deletion (no valid cookie): ${cookie.substring(0, 50)}`);
+              return true; // Forward deletion to clear stale browser cookie
             }
             return true;
           })
@@ -407,6 +441,25 @@ p{color:#9e9e9e;margin:1rem 0;line-height:1.6;font-size:0.95rem}
 
           // Also rewrite url("/...") in inline styles and CSS
           html = html.replace(/(url\s*\(\s*["']?)\/(?!\/|proxy\/)/gi, `$1${proxyPrefix}/`);
+
+          // Rewrite root-relative paths inside inline event handler attributes (onload, onclick, etc.).
+          // This catches patterns like: <body onload="location.replace(cond ? '/servlet/home' : '/servlet/ppc_menu')">
+          // We ONLY rewrite inside on* attributes, NOT inside <script> blocks, to avoid corrupting JS code.
+          // Note: Location.prototype is [Unforgeable] so client-side monkey-patching doesn't work.
+          html = html.replace(/(\bon\w+\s*=\s*")((?:[^"\\]|\\.)*)"/gi, (match, attrStart, attrBody) => {
+            const rewritten = attrBody.replace(/((?:[?:=]\s*|(?:replace|assign)\s*\(\s*|\.href\s*=\s*)['"])\/(?!\/|proxy\/)/g, `$1${proxyPrefix}/`);
+            return `${attrStart}${rewritten}"`;
+          });
+          html = html.replace(/(\bon\w+\s*=\s*')((?:[^'\\]|\\.)*)'/gi, (match, attrStart, attrBody) => {
+            const rewritten = attrBody.replace(/((?:[?:=]\s*|(?:replace|assign)\s*\(\s*|\.href\s*=\s*)[""])\/(?!\/|proxy\/)/g, `$1${proxyPrefix}/`);
+            return `${attrStart}${rewritten}'`;
+          });
+          // Rewrite location.replace/assign/href in <script> blocks (targeted, not broad ternary)
+          html = html.replace(/(location\.(?:replace|assign)\s*\(\s*['"])\/(?!\/|proxy\/)/gi, `$1${proxyPrefix}/`);
+          html = html.replace(/(location\.href\s*=\s*['"])\/(?!\/|proxy\/)/gi, `$1${proxyPrefix}/`);
+          html = html.replace(/(location\s*=\s*['"])\/(?!\/|proxy\/)/gi, `$1${proxyPrefix}/`);
+          // Rewrite meta http-equiv="refresh" content="0;url=/..."
+          html = html.replace(/(content\s*=\s*["'][^"']*url\s*=\s*)\/(?!\/|proxy\/)/gi, `$1${proxyPrefix}/`);
 
           const rewriteTag = `<script>${PROXY_REWRITE_SCRIPT}</script>`;
           // NOTE: Do NOT inject <base href> — it breaks applications like Cockpit
@@ -644,7 +697,10 @@ a:hover{background:#81d4fa}</style></head>
     targetPath: string,
     attempt = 0,
   ): Promise<void> {
-    const targetUrl = await this.resolveProxyTarget(session);
+    // Session affinity: POST requests and login/API paths go through the PRIMARY bridge
+    // to maintain TLS session binding. Static GETs use round-robin pool for parallelism.
+    const needsAffinity = req.method === 'POST' || /^\/(login|api|servlet)/.test(targetPath);
+    const targetUrl = await this.resolveProxyTarget(session, needsAffinity);
     if (!targetUrl) {
       res.writeHead(503, { 'Content-Type': 'text/plain' });
       res.end('Unable to resolve proxy target for this device');
@@ -671,6 +727,11 @@ a:hover{background:#81d4fa}</style></head>
     (req as any).__proxySession = session;
     (req as any).__proxySessionId = sessionId;
     (req as any).__proxyTargetPath = targetPath;
+
+    // NOTE: JSESSIONID stripping was removed — the Gateway sends Set-Cookie
+    // with a NEW unauthenticated JSESSIONID on cookie-less requests, which
+    // overwrites the browser's authenticated cookie and causes faster logout.
+    // Session affinity (POST/API → primary bridge) is sufficient.
 
     // NOTE: Previously stripped cockpit auth cookie for hash-based static assets
     // (/cockpit/$HASH/...) assuming they didn't need auth. However, some Cockpit
@@ -1289,10 +1350,13 @@ a:hover{background:#81d4fa}</style></head>
       const wsVersion = req.headers['sec-websocket-version'] || '13';
       const wsProtocol = req.headers['sec-websocket-protocol'] || '';
 
+      // Cockpit CSRF: if Origin is present it must match the connection scheme.
+      // The agent TLS-wraps port 9090 so Cockpit sees HTTPS, but we can't know
+      // the scheme here. Omitting Origin entirely is safest — Cockpit treats
+      // absent Origin as same-origin and allows the upgrade.
       const headers = [
         `GET ${targetPath} HTTP/1.1`,
         `Host: ${cockpitHost}`,
-        `Origin: http://${cockpitHost}`,
         `Connection: Upgrade`,
         `Upgrade: websocket`,
         `Sec-WebSocket-Key: ${wsKey}`,
@@ -1488,6 +1552,14 @@ a:hover{background:#81d4fa}</style></head>
     if (clean.startsWith('/cockpit/static/')) return true;
     // Cache Cockpit manifests (component registry)
     if (clean.endsWith('/manifests.json') || clean.endsWith('/manifests.js')) return true;
+    // Cache Emerson Gateway Dojo.js framework files (405 resources on dashboard load)
+    if (clean.startsWith('/Scripts/')) return true;
+    if (clean.startsWith('/dijit/')) return true;
+    if (clean.startsWith('/dojox/')) return true;
+    if (clean.startsWith('/dojo/')) return true;
+    if (clean.startsWith('/themes/')) return true;
+    if (clean.startsWith('/Content/')) return true;
+    if (clean.startsWith('/Images/')) return true;
     // Cache known Node-RED static directories
     if (clean.startsWith('/icons/') || clean.startsWith('/vendor/')) return true;
     // Cache Node-RED API responses that rarely change and are critical for editor load
@@ -1541,13 +1613,18 @@ a:hover{background:#81d4fa}</style></head>
     }
   }
 
-  private async resolveProxyTarget(session: any): Promise<string | null> {
+  private async resolveProxyTarget(session: any, sessionAffinity = false): Promise<string | null> {
     // Use agent tunnel bridge (standard path — always plain HTTP)
     // The bridge relays TCP to the device via the agent. Cockpit on port 9090
     // accepts unencrypted HTTP (AllowUnencrypted=true in cockpit.conf).
     // With shared exposures, bridges are keyed by exposureId.
     const bridgeKey = this.getBridgeLookupKey(session);
-    const bridgePort = this.streamBridge.getBridgePort(bridgeKey);
+    // Session-affinity routing: POST/API calls go through the PRIMARY bridge
+    // to maintain TLS session binding (Emerson Gateway, HTTPS devices).
+    // Static files (GET .js/.css/.png) use round-robin across the pool.
+    const bridgePort = sessionAffinity
+      ? (this.streamBridge.getPrimaryBridgePort(bridgeKey) ?? this.streamBridge.getBridgePort(bridgeKey))
+      : this.streamBridge.getBridgePort(bridgeKey);
     if (bridgePort) {
       this.logger.debug(
         `Using agent tunnel bridge 127.0.0.1:${bridgePort} for session ${session.id} (exposure=${session.exposureId || 'legacy'})`,
